@@ -76,6 +76,28 @@ func (f fakeBackend) GetTree(_ context.Context, rootPageID string, depth int, li
 	}, nil
 }
 
+func (f fakeBackend) GetChanges(_ context.Context, query ChangeQuery) ([]ChangeRecord, error) {
+	_ = query
+	return []ChangeRecord{
+		{
+			RunID:                  6,
+			PageID:                 "42",
+			Title:                  "Runbook",
+			OldVersion:             7,
+			NewVersion:             8,
+			ChangeKind:             "updated",
+			BodyRawChanged:         true,
+			BodyNormChanged:        false,
+			DiagramChangeDetected:  true,
+			DiagramContentUnparsed: true,
+			Summary:                "content updated",
+			ExcerptBefore:          "revision=6",
+			ExcerptAfter:           "revision=8",
+			CreatedAt:              time.Unix(0, 0).UTC(),
+		},
+	}, nil
+}
+
 func connectClient(t *testing.T, s *Server) *sdk.ClientSession {
 	t.Helper()
 	ctx := context.Background()
@@ -103,7 +125,7 @@ func TestSearchToolExposedAndCallable(t *testing.T) {
 		}
 		toolNames[tool.Name] = true
 	}
-	for _, expected := range []string{"search", "ask", "get_tree"} {
+	for _, expected := range []string{"search", "ask", "get_tree", "what_changed"} {
 		if !toolNames[expected] {
 			t.Fatalf("expected tool %q to be listed", expected)
 		}
@@ -129,6 +151,62 @@ func TestSearchToolExposedAndCallable(t *testing.T) {
 	raw, _ := json.Marshal(resp.StructuredContent)
 	if !strings.Contains(string(raw), "\"page_id\":\"42\"") {
 		t.Fatalf("expected structured hit payload: %s", string(raw))
+	}
+}
+
+func TestWhatChangedTool(t *testing.T) {
+	s := NewServer(fakeBackend{})
+	cs := connectClient(t, s)
+	defer cs.Close()
+
+	resp, err := cs.CallTool(context.Background(), &sdk.CallToolParams{
+		Name:      "what_changed",
+		Arguments: map[string]any{"run_id": 6, "limit": 5},
+	})
+	if err != nil {
+		t.Fatalf("call what_changed: %v", err)
+	}
+	if len(resp.Content) == 0 {
+		t.Fatalf("expected content in what_changed response")
+	}
+	raw, _ := json.Marshal(resp.StructuredContent)
+	if !strings.Contains(string(raw), "\"diagram_meta\"") {
+		t.Fatalf("expected reasons in structured payload: %s", string(raw))
+	}
+}
+
+func TestWhatChangedToolWithoutExcerpts(t *testing.T) {
+	s := NewServer(fakeBackend{})
+	cs := connectClient(t, s)
+	defer cs.Close()
+
+	resp, err := cs.CallTool(context.Background(), &sdk.CallToolParams{
+		Name:      "what_changed",
+		Arguments: map[string]any{"run_id": 6, "include_excerpts": false},
+	})
+	if err != nil {
+		t.Fatalf("call what_changed: %v", err)
+	}
+	raw, _ := json.Marshal(resp.StructuredContent)
+	if strings.Contains(string(raw), "revision=6") || strings.Contains(string(raw), "revision=8") {
+		t.Fatalf("expected excerpts to be omitted: %s", string(raw))
+	}
+}
+
+func TestWhatChangedToolRejectsBadDate(t *testing.T) {
+	s := NewServer(fakeBackend{})
+	cs := connectClient(t, s)
+	defer cs.Close()
+
+	resp, err := cs.CallTool(context.Background(), &sdk.CallToolParams{
+		Name:      "what_changed",
+		Arguments: map[string]any{"date": "2026/04/07"},
+	})
+	if err != nil {
+		t.Fatalf("call what_changed: %v", err)
+	}
+	if !resp.IsError {
+		t.Fatalf("expected MCP error result for invalid date")
 	}
 }
 

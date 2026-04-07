@@ -14,7 +14,7 @@
    - отдельный бинарь `cmd/mcp`;
    - реализован через `modelcontextprotocol/go-sdk`;
    - публикует retrieval-only интерфейс:
-     - tools: `search`, `ask`, `get_tree`
+     - tools: `search`, `ask`, `get_tree`, `what_changed`
      - resource templates: `confluence://page/{page_id}`, `confluence://chunk/{chunk_id}`, `confluence://digest/{date}`
      - prompts: `daily_brief`, `investigate_page`, `compare_versions`
 
@@ -97,3 +97,4 @@ flowchart LR
 - [ ] Улучшить observability MCP слоя: структурные метрики по latency/errors на tool/resource/prompt handlers.
 - [ ] Зафиксировать единую error taxonomy для MCP (resource not found vs validation vs backend unavailable).
 - [ ] Добавить e2e сценарии offline mode как отдельные тесты/чеклист (MCP работает при недоступном upstream Confluence, если локальный индекс уже есть).
+- [ ] Научить реплику разбирать содержимое диаграмм (`drawio`) на семантические изменения, а не только помечать `diagram_change_detected`.

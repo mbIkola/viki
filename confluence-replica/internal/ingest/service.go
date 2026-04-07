@@ -129,6 +129,15 @@ func (s *Service) syncInternal(ctx context.Context, parentID, mode string) error
 		_ = s.store.FinishSyncRun(ctx, runID, "failed", map[string]any{"error": err.Error()})
 		return err
 	}
+	diffRows, err := s.buildPageChangeDiffs(ctx, runID, events)
+	if err != nil {
+		_ = s.store.FinishSyncRun(ctx, runID, "failed", map[string]any{"error": err.Error()})
+		return err
+	}
+	if err := s.store.InsertPageChangeDiffs(ctx, diffRows); err != nil {
+		_ = s.store.FinishSyncRun(ctx, runID, "failed", map[string]any{"error": err.Error()})
+		return err
+	}
 	logx.Infof("[ingest] changes_detected total=%d", len(events))
 
 	if err := s.store.FinishSyncRun(ctx, runID, "success", map[string]any{"pages_scanned": len(pages), "events": len(events)}); err != nil {
@@ -234,4 +243,150 @@ func (s *Service) fillChunkEmbeddings(ctx context.Context, chunks []store.Chunk)
 		logx.Debugf("[ingest] embeddings_done chunks=%d", len(chunks))
 	}
 	return nil
+}
+
+func (s *Service) buildPageChangeDiffs(ctx context.Context, runID int64, events []diff.Event) ([]store.PageChangeDiff, error) {
+	out := make([]store.PageChangeDiff, 0, len(events))
+	for _, e := range events {
+		row := store.PageChangeDiff{
+			RunID:      runID,
+			PageID:     e.PageID,
+			OldVersion: e.OldVersion,
+			NewVersion: e.NewVersion,
+			ChangeKind: string(e.Type),
+			Summary:    e.Summary,
+		}
+
+		oldDoc, hasOld, err := s.loadPageVersion(ctx, e.PageID, e.OldVersion)
+		if err != nil {
+			return nil, err
+		}
+		newDoc, hasNew, err := s.loadPageVersion(ctx, e.PageID, e.NewVersion)
+		if err != nil {
+			return nil, err
+		}
+
+		if hasNew {
+			row.Title = newDoc.Title
+			row.ParentPageID = newDoc.ParentPageID
+		} else if hasOld {
+			row.Title = oldDoc.Title
+			row.ParentPageID = oldDoc.ParentPageID
+		}
+
+		row.TitleChanged = e.OldTitle != e.NewTitle
+		row.ParentChanged = e.OldParent != e.NewParent
+
+		oldRaw, newRaw := "", ""
+		oldNorm, newNorm := "", ""
+		if hasOld {
+			oldRaw = oldDoc.BodyRaw
+			oldNorm = oldDoc.BodyNorm
+			row.BodyHashOld = oldDoc.BodyHash
+		}
+		if hasNew {
+			newRaw = newDoc.BodyRaw
+			newNorm = newDoc.BodyNorm
+			row.BodyHashNew = newDoc.BodyHash
+		}
+
+		row.BodyRawChanged = oldRaw != newRaw
+		row.BodyNormChanged = oldNorm != newNorm
+		row.DiagramChangeDetected = detectDiagramMetaChange(oldRaw, newRaw)
+		row.DiagramContentUnparsed = row.DiagramChangeDetected
+		row.Excerpts = buildChangeExcerpt(row, oldRaw, newRaw, oldNorm, newNorm, hasOld, hasNew, e)
+
+		out = append(out, row)
+	}
+	return out, nil
+}
+
+func (s *Service) loadPageVersion(ctx context.Context, pageID string, version int) (store.PageDocument, bool, error) {
+	if version <= 0 {
+		return store.PageDocument{}, false, nil
+	}
+	doc, err := s.store.GetPageVersion(ctx, pageID, version)
+	if err != nil {
+		return store.PageDocument{}, false, fmt.Errorf("load page %s version %d: %w", pageID, version, err)
+	}
+	return doc, true, nil
+}
+
+func detectDiagramMetaChange(oldRaw, newRaw string) bool {
+	if oldRaw == newRaw {
+		return false
+	}
+	return strings.Contains(oldRaw, `ac:name="drawio"`) || strings.Contains(newRaw, `ac:name="drawio"`)
+}
+
+func buildChangeExcerpt(row store.PageChangeDiff, oldRaw, newRaw, oldNorm, newNorm string, hasOld, hasNew bool, e diff.Event) store.ChangeExcerpts {
+	switch e.Type {
+	case diff.ChangeCreated:
+		if hasNew {
+			_, after := firstDifferenceExcerpt("", newNorm, 220)
+			return store.ChangeExcerpts{After: after, Source: "body_norm"}
+		}
+	case diff.ChangeDeleted:
+		if hasOld {
+			before, _ := firstDifferenceExcerpt(oldNorm, "", 220)
+			return store.ChangeExcerpts{Before: before, Source: "body_norm"}
+		}
+	}
+
+	if row.BodyNormChanged {
+		before, after := firstDifferenceExcerpt(oldNorm, newNorm, 220)
+		return store.ChangeExcerpts{Before: before, After: after, Source: "body_norm"}
+	}
+	if row.BodyRawChanged {
+		before, after := firstDifferenceExcerpt(oldRaw, newRaw, 220)
+		return store.ChangeExcerpts{Before: before, After: after, Source: "body_raw"}
+	}
+	if row.TitleChanged || row.ParentChanged {
+		before := strings.TrimSpace(fmt.Sprintf("title=%s parent=%s", e.OldTitle, e.OldParent))
+		after := strings.TrimSpace(fmt.Sprintf("title=%s parent=%s", e.NewTitle, e.NewParent))
+		return store.ChangeExcerpts{Before: before, After: after, Source: "metadata"}
+	}
+	return store.ChangeExcerpts{}
+}
+
+func firstDifferenceExcerpt(oldText, newText string, span int) (string, string) {
+	if span <= 0 {
+		span = 120
+	}
+	oldRunes := []rune(oldText)
+	newRunes := []rune(newText)
+	max := len(oldRunes)
+	if len(newRunes) < max {
+		max = len(newRunes)
+	}
+	pos := 0
+	for pos < max && oldRunes[pos] == newRunes[pos] {
+		pos++
+	}
+	return excerptWindow(oldRunes, pos, span), excerptWindow(newRunes, pos, span)
+}
+
+func excerptWindow(runes []rune, pos int, span int) string {
+	if len(runes) == 0 {
+		return ""
+	}
+	if pos < 0 {
+		pos = 0
+	}
+	if pos > len(runes) {
+		pos = len(runes)
+	}
+	start := pos - span/2
+	if start < 0 {
+		start = 0
+	}
+	end := start + span
+	if end > len(runes) {
+		end = len(runes)
+		start = end - span
+		if start < 0 {
+			start = 0
+		}
+	}
+	return strings.TrimSpace(string(runes[start:end]))
 }

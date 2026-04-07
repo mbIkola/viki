@@ -77,6 +77,61 @@ type TreeNode struct {
 	Depth        int    `json:"depth"`
 }
 
+type ChangeQuery struct {
+	Date     *time.Time
+	RunID    int64
+	ParentID string
+	Limit    int
+}
+
+type ChangeRecord struct {
+	RunID                  int64     `json:"run_id"`
+	PageID                 string    `json:"page_id"`
+	Title                  string    `json:"title"`
+	OldVersion             int       `json:"old_version"`
+	NewVersion             int       `json:"new_version"`
+	ChangeKind             string    `json:"change_kind"`
+	TitleChanged           bool      `json:"title_changed"`
+	ParentChanged          bool      `json:"parent_changed"`
+	BodyRawChanged         bool      `json:"body_raw_changed"`
+	BodyNormChanged        bool      `json:"body_norm_changed"`
+	DiagramChangeDetected  bool      `json:"diagram_change_detected"`
+	DiagramContentUnparsed bool      `json:"diagram_content_unparsed"`
+	Summary                string    `json:"summary"`
+	ExcerptBefore          string    `json:"excerpt_before,omitempty"`
+	ExcerptAfter           string    `json:"excerpt_after,omitempty"`
+	ExcerptSource          string    `json:"excerpt_source,omitempty"`
+	CreatedAt              time.Time `json:"created_at"`
+}
+
+type whatChangedInput struct {
+	Date            string `json:"date,omitempty" jsonschema:"target date in YYYY-MM-DD. Defaults to today."`
+	RunID           int64  `json:"run_id,omitempty" jsonschema:"optional sync run id"`
+	ParentID        string `json:"parent_id,omitempty" jsonschema:"optional parent page id filter"`
+	Limit           int    `json:"limit,omitempty" jsonschema:"max number of changes to return"`
+	IncludeExcerpts *bool  `json:"include_excerpts,omitempty" jsonschema:"include before/after excerpts in response"`
+}
+
+type whatChangedOutput struct {
+	Changes []whatChangedRow `json:"changes"`
+}
+
+type whatChangedRow struct {
+	RunID                  int64     `json:"run_id"`
+	PageID                 string    `json:"page_id"`
+	Title                  string    `json:"title"`
+	OldVersion             int       `json:"old_version"`
+	NewVersion             int       `json:"new_version"`
+	ChangeKind             string    `json:"change_kind"`
+	Reasons                []string  `json:"reasons"`
+	DiagramChangeDetected  bool      `json:"diagram_change_detected"`
+	DiagramContentUnparsed bool      `json:"diagram_content_unparsed"`
+	Summary                string    `json:"summary"`
+	ExcerptBefore          string    `json:"excerpt_before,omitempty"`
+	ExcerptAfter           string    `json:"excerpt_after,omitempty"`
+	CreatedAt              time.Time `json:"created_at"`
+}
+
 type Backend interface {
 	Search(ctx context.Context, query string, limit int, includeSnippets bool) ([]SearchResult, error)
 	Ask(ctx context.Context, query string, topK int) (AskResult, error)
@@ -84,6 +139,7 @@ type Backend interface {
 	GetChunk(ctx context.Context, chunkID string) (ChunkDoc, error)
 	GetDigest(ctx context.Context, date time.Time) (DigestDoc, error)
 	GetTree(ctx context.Context, rootPageID string, depth int, limit int) ([]TreeNode, error)
+	GetChanges(ctx context.Context, query ChangeQuery) ([]ChangeRecord, error)
 }
 
 type Server struct {
@@ -153,6 +209,11 @@ func (s *Server) registerTools() {
 		Name:        "get_tree",
 		Description: "Return a subtree rooted at root_page_id from local replica.",
 	}, s.getTreeTool)
+
+	sdk.AddTool(s.sdk, &sdk.Tool{
+		Name:        "what_changed",
+		Description: "Return structured history of what changed from local sync diffs.",
+	}, s.whatChangedTool)
 }
 
 func (s *Server) registerResources() {
@@ -261,6 +322,84 @@ func (s *Server) getTreeTool(ctx context.Context, _ *sdk.CallToolRequest, in get
 		return nil, getTreeOutput{}, err
 	}
 	return nil, getTreeOutput{Nodes: nodes}, nil
+}
+
+func (s *Server) whatChangedTool(ctx context.Context, _ *sdk.CallToolRequest, in whatChangedInput) (*sdk.CallToolResult, whatChangedOutput, error) {
+	limit := in.Limit
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	includeExcerpts := true
+	if in.IncludeExcerpts != nil {
+		includeExcerpts = *in.IncludeExcerpts
+	}
+	var day *time.Time
+	if strings.TrimSpace(in.Date) != "" {
+		parsed, err := time.Parse("2006-01-02", strings.TrimSpace(in.Date))
+		if err != nil {
+			return nil, whatChangedOutput{}, errors.New("date must be YYYY-MM-DD")
+		}
+		day = &parsed
+	} else if in.RunID == 0 {
+		d := time.Now().UTC()
+		onlyDay := time.Date(d.Year(), d.Month(), d.Day(), 0, 0, 0, 0, time.UTC)
+		day = &onlyDay
+	}
+
+	changes, err := s.backend.GetChanges(ctx, ChangeQuery{
+		Date:     day,
+		RunID:    in.RunID,
+		ParentID: strings.TrimSpace(in.ParentID),
+		Limit:    limit,
+	})
+	if err != nil {
+		return nil, whatChangedOutput{}, err
+	}
+	out := make([]whatChangedRow, 0, len(changes))
+	for _, c := range changes {
+		row := whatChangedRow{
+			RunID:                  c.RunID,
+			PageID:                 c.PageID,
+			Title:                  c.Title,
+			OldVersion:             c.OldVersion,
+			NewVersion:             c.NewVersion,
+			ChangeKind:             c.ChangeKind,
+			Reasons:                changeReasons(c),
+			DiagramChangeDetected:  c.DiagramChangeDetected,
+			DiagramContentUnparsed: c.DiagramContentUnparsed,
+			Summary:                c.Summary,
+			CreatedAt:              c.CreatedAt,
+		}
+		if includeExcerpts {
+			row.ExcerptBefore = c.ExcerptBefore
+			row.ExcerptAfter = c.ExcerptAfter
+		}
+		out = append(out, row)
+	}
+	return nil, whatChangedOutput{Changes: out}, nil
+}
+
+func changeReasons(c ChangeRecord) []string {
+	reasons := make([]string, 0, 5)
+	if c.BodyRawChanged {
+		reasons = append(reasons, "content_raw")
+	}
+	if c.BodyNormChanged {
+		reasons = append(reasons, "content_norm")
+	}
+	if c.TitleChanged {
+		reasons = append(reasons, "title")
+	}
+	if c.ParentChanged {
+		reasons = append(reasons, "parent")
+	}
+	if c.DiagramChangeDetected {
+		reasons = append(reasons, "diagram_meta")
+	}
+	if len(reasons) == 0 {
+		reasons = append(reasons, "metadata")
+	}
+	return reasons
 }
 
 func (s *Server) readResource(ctx context.Context, req *sdk.ReadResourceRequest) (*sdk.ReadResourceResult, error) {

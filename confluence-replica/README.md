@@ -56,6 +56,9 @@ Non-goal: expose `bootstrap/sync/digest jobs` through MCP.
   - returns explicit citations and `refused=true` if context is weak
 - `get_tree(root_page_id, depth=2, limit=200)`
   - returns local page subtree for context exploration
+- `what_changed(date?, run_id?, parent_id?, limit=50, include_excerpts=true)`
+  - returns structured per-page diffs captured during sync
+  - includes change reasons and diagram metadata flags
 
 ### Prompts
 
@@ -135,7 +138,7 @@ Or via CLI:
 
 After connecting, verify in the client that MCP exposes:
 
-- tools: `search`, `ask`, `get_tree`
+- tools: `search`, `ask`, `get_tree`, `what_changed`
 - resource templates: `confluence://page/{id}`, `confluence://chunk/{id}`, `confluence://digest/{date}`
 - prompts: `daily_brief`, `investigate_page`, `compare_versions`
 

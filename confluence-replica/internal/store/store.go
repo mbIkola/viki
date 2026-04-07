@@ -71,6 +71,40 @@ type ChangeEvent struct {
 	Summary    string
 }
 
+type ChangeExcerpts struct {
+	Before string `json:"before,omitempty"`
+	After  string `json:"after,omitempty"`
+	Source string `json:"source,omitempty"`
+}
+
+type PageChangeDiff struct {
+	RunID                  int64
+	PageID                 string
+	Title                  string
+	ParentPageID           string
+	OldVersion             int
+	NewVersion             int
+	ChangeKind             string
+	TitleChanged           bool
+	ParentChanged          bool
+	BodyRawChanged         bool
+	BodyNormChanged        bool
+	BodyHashOld            string
+	BodyHashNew            string
+	DiagramChangeDetected  bool
+	DiagramContentUnparsed bool
+	Summary                string
+	Excerpts               ChangeExcerpts
+	CreatedAt              time.Time
+}
+
+type PageChangeDiffQuery struct {
+	Date         *time.Time
+	RunID        int64
+	ParentPageID string
+	Limit        int
+}
+
 type SearchRow struct {
 	PageID         string
 	ChunkID        string
@@ -127,9 +161,11 @@ type Store interface {
 	UpsertPageWithVersion(ctx context.Context, p Page, v PageVersion, chunks []Chunk) error
 	ListCurrentStates(ctx context.Context) ([]PageState, error)
 	InsertChangeEvents(ctx context.Context, events []ChangeEvent) error
+	InsertPageChangeDiffs(ctx context.Context, diffs []PageChangeDiff) error
 	SaveDigest(ctx context.Context, date time.Time, markdown string, stats map[string]any) error
 	GetDigest(ctx context.Context, date time.Time) (string, error)
 	ListChangeEventsForDate(ctx context.Context, date time.Time) ([]ChangeEvent, error)
+	ListPageChangeDiffs(ctx context.Context, query PageChangeDiffQuery) ([]PageChangeDiff, error)
 	SearchHybrid(ctx context.Context, query string, embedding []float32, limit int) ([]SearchRow, error)
 	GetPageCurrent(ctx context.Context, pageID string) (PageDocument, error)
 	GetPageVersion(ctx context.Context, pageID string, version int) (PageDocument, error)
@@ -297,6 +333,49 @@ func (s *PostgresStore) InsertChangeEvents(ctx context.Context, events []ChangeE
 	return nil
 }
 
+func (s *PostgresStore) InsertPageChangeDiffs(ctx context.Context, diffs []PageChangeDiff) error {
+	if len(diffs) == 0 {
+		return nil
+	}
+	batch := &pgx.Batch{}
+	for _, d := range diffs {
+		batch.Queue(`
+			INSERT INTO page_change_diffs(
+				run_id, page_id, old_version, new_version, change_kind,
+				title_changed, parent_changed, body_raw_changed, body_norm_changed,
+				body_hash_old, body_hash_new, diagram_change_detected, diagram_content_unparsed,
+				summary, excerpts_jsonb
+			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::jsonb)
+			ON CONFLICT (run_id, page_id) DO UPDATE SET
+				old_version=excluded.old_version,
+				new_version=excluded.new_version,
+				change_kind=excluded.change_kind,
+				title_changed=excluded.title_changed,
+				parent_changed=excluded.parent_changed,
+				body_raw_changed=excluded.body_raw_changed,
+				body_norm_changed=excluded.body_norm_changed,
+				body_hash_old=excluded.body_hash_old,
+				body_hash_new=excluded.body_hash_new,
+				diagram_change_detected=excluded.diagram_change_detected,
+				diagram_content_unparsed=excluded.diagram_content_unparsed,
+				summary=excluded.summary,
+				excerpts_jsonb=excluded.excerpts_jsonb
+		`, d.RunID, d.PageID, zeroToNull(d.OldVersion), zeroToNull(d.NewVersion), d.ChangeKind,
+			d.TitleChanged, d.ParentChanged, d.BodyRawChanged, d.BodyNormChanged,
+			nullIfEmpty(d.BodyHashOld), nullIfEmpty(d.BodyHashNew), d.DiagramChangeDetected, d.DiagramContentUnparsed,
+			d.Summary, toJSON(d.Excerpts))
+	}
+	br := s.pool.SendBatch(ctx, batch)
+	defer br.Close()
+	for range diffs {
+		if _, err := br.Exec(); err != nil {
+			return err
+		}
+	}
+	logx.Debugf("[store] page_change_diffs_inserted count=%d table=page_change_diffs", len(diffs))
+	return nil
+}
+
 func (s *PostgresStore) SaveDigest(ctx context.Context, date time.Time, markdown string, stats map[string]any) error {
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO daily_digests(digest_date, generated_at, markdown, stats_jsonb)
@@ -461,6 +540,84 @@ func (s *PostgresStore) ListChangeEventsForDate(ctx context.Context, date time.T
 	return out, rows.Err()
 }
 
+func (s *PostgresStore) ListPageChangeDiffs(ctx context.Context, query PageChangeDiffQuery) ([]PageChangeDiff, error) {
+	limit := query.Limit
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	dateText := ""
+	if query.Date != nil {
+		dateText = query.Date.Format("2006-01-02")
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT
+			d.run_id,
+			d.page_id,
+			COALESCE(p.title, '') AS title,
+			COALESCE(p.parent_page_id, '') AS parent_page_id,
+			COALESCE(d.old_version, 0) AS old_version,
+			COALESCE(d.new_version, 0) AS new_version,
+			d.change_kind,
+			d.title_changed,
+			d.parent_changed,
+			d.body_raw_changed,
+			d.body_norm_changed,
+			COALESCE(d.body_hash_old, '') AS body_hash_old,
+			COALESCE(d.body_hash_new, '') AS body_hash_new,
+			d.diagram_change_detected,
+			d.diagram_content_unparsed,
+			d.summary,
+			d.excerpts_jsonb,
+			d.created_at
+		FROM page_change_diffs d
+		LEFT JOIN pages p ON p.page_id = d.page_id
+		WHERE ($1::date IS NULL OR DATE(d.created_at) = $1::date)
+		  AND ($2::bigint = 0 OR d.run_id = $2)
+		  AND ($3::text = '' OR COALESCE(p.parent_page_id, '') = $3)
+		ORDER BY d.created_at DESC, d.run_id DESC, d.page_id ASC
+		LIMIT $4
+	`, emptyToNil(dateText), query.RunID, query.ParentPageID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]PageChangeDiff, 0)
+	for rows.Next() {
+		var (
+			d           PageChangeDiff
+			excerptsRaw []byte
+		)
+		if err := rows.Scan(
+			&d.RunID,
+			&d.PageID,
+			&d.Title,
+			&d.ParentPageID,
+			&d.OldVersion,
+			&d.NewVersion,
+			&d.ChangeKind,
+			&d.TitleChanged,
+			&d.ParentChanged,
+			&d.BodyRawChanged,
+			&d.BodyNormChanged,
+			&d.BodyHashOld,
+			&d.BodyHashNew,
+			&d.DiagramChangeDetected,
+			&d.DiagramContentUnparsed,
+			&d.Summary,
+			&excerptsRaw,
+			&d.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		if len(excerptsRaw) > 0 {
+			_ = json.Unmarshal(excerptsRaw, &d.Excerpts)
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
 func (s *PostgresStore) SearchHybrid(ctx context.Context, query string, embedding []float32, limit int) ([]SearchRow, error) {
 	if len(embedding) > 0 {
 		return s.searchHybridWithEmbedding(ctx, query, embedding, limit)
@@ -608,6 +765,13 @@ func vectorLiteral(v []float32) string {
 }
 
 func nullIfEmpty(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
+func emptyToNil(s string) any {
 	if s == "" {
 		return nil
 	}

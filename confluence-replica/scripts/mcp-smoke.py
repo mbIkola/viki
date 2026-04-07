@@ -95,7 +95,7 @@ def main():
         prompt_names = {p.get("name", "") for p in prompts}
         template_uris = {r.get("uriTemplate", "") for r in templates}
 
-        expected_tools = {"search", "ask", "get_tree"}
+        expected_tools = {"search", "ask", "get_tree", "what_changed"}
         expected_prompts = {"daily_brief", "investigate_page", "compare_versions"}
         expected_templates = {
             "confluence://page/{page_id}",

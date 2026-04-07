@@ -1,0 +1,27 @@
+# IDE
+.idea/
+confluence-replica/.idea/
+
+# Build outputs
+confluence-replica/bin/
+
+# Local config (tracked example exists)
+confluence-replica/config/config.yaml
+
+# Go
+*.test
+*.out
+*.prof
+coverage.out
+cover.out
+
+# Shell / local env
+.env
+.env.*
+!.env.example
+
+# OS / editor noise
+.DS_Store
+*.swp
+*.swo
+*~

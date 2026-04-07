@@ -12,6 +12,7 @@ import (
 	"confluence-replica/internal/app"
 	"confluence-replica/internal/logx"
 	mcpserver "confluence-replica/internal/mcp"
+	"confluence-replica/internal/store"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -131,6 +132,41 @@ func (r runtimeBackend) GetTree(ctx context.Context, rootPageID string, depth in
 			ParentPageID: n.ParentPageID,
 			CurrentVer:   n.CurrentVer,
 			Depth:        n.Depth,
+		})
+	}
+	return out, nil
+}
+
+func (r runtimeBackend) GetChanges(ctx context.Context, query mcpserver.ChangeQuery) ([]mcpserver.ChangeRecord, error) {
+	diffs, err := r.rt.Store.ListPageChangeDiffs(ctx, store.PageChangeDiffQuery{
+		Date:         query.Date,
+		RunID:        query.RunID,
+		ParentPageID: query.ParentID,
+		Limit:        query.Limit,
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]mcpserver.ChangeRecord, 0, len(diffs))
+	for _, d := range diffs {
+		out = append(out, mcpserver.ChangeRecord{
+			RunID:                  d.RunID,
+			PageID:                 d.PageID,
+			Title:                  d.Title,
+			OldVersion:             d.OldVersion,
+			NewVersion:             d.NewVersion,
+			ChangeKind:             d.ChangeKind,
+			TitleChanged:           d.TitleChanged,
+			ParentChanged:          d.ParentChanged,
+			BodyRawChanged:         d.BodyRawChanged,
+			BodyNormChanged:        d.BodyNormChanged,
+			DiagramChangeDetected:  d.DiagramChangeDetected,
+			DiagramContentUnparsed: d.DiagramContentUnparsed,
+			Summary:                d.Summary,
+			ExcerptBefore:          d.Excerpts.Before,
+			ExcerptAfter:           d.Excerpts.After,
+			ExcerptSource:          d.Excerpts.Source,
+			CreatedAt:              d.CreatedAt,
 		})
 	}
 	return out, nil
