@@ -1,0 +1,17 @@
+database:
+  dsn: "postgres://postgres:postgres@localhost:5432/confluence_replica?sslmode=disable"
+
+confluence:
+  base_url: "https://gbuconfluence.oraclecorp.com"
+  token: "keychain://codex_confluence_pat"
+  request_timeout_seconds: 30
+  default_parent_id: ""
+
+api:
+  addr: ":8080"
+
+embeddings:
+  provider: "ollama"
+  base_url: "http://127.0.0.1:11434"
+  model: "nomic-embed-text"
+  request_timeout_seconds: 20

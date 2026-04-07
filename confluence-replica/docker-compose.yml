@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: confluence-replica-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-confluence_replica}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    ports:
+      - "${PG_PORT:-5432}:5432"
+    volumes:
+      - type: bind
+        source: ${PG_DATA_DIR:-/Users/${USER}/.local/viki/confluence/postgres-data}
+        target: /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-confluence_replica}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
