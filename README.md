@@ -9,5 +9,5 @@
 
 ## Notes
 
-- Skills: [`docs/skills/0001-superpowers.md`](/Users/nkharche/dev/codex/docs/skills/0001-superpowers.md)
-- Confluence: [`docs/skills/0002-confluence-mcp-smoketest.md`](/Users/nkharche/dev/codex/docs/skills/0002-confluence-mcp-smoketest.md)
+- Skills: [`docs/skills/0001-superpowers.md`](./docs/skills/0001-superpowers.md)
+- Confluence: [`docs/skills/0002-confluence-mcp-smoketest.md`](./docs/skills/0002-confluence-mcp-smoketest.md)

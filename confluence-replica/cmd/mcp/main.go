@@ -12,6 +12,7 @@ import (
 	"confluence-replica/internal/app"
 	"confluence-replica/internal/logx"
 	mcpserver "confluence-replica/internal/mcp"
+	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 type runtimeBackend struct {
@@ -147,7 +148,7 @@ func main() {
 	verbose := fs.Bool("verbose", false, "set log level to DEBUG")
 	_ = fs.Parse(os.Args[1:])
 
-	cfg, err := app.LoadConfig(*configPath)
+	cfg, err := app.LoadConfigWithOptions(*configPath, app.LoadOptions{RequireConfluenceToken: false})
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -161,7 +162,7 @@ func main() {
 	defer rt.Close()
 
 	srv := mcpserver.NewServer(runtimeBackend{rt: rt})
-	if err := srv.Serve(context.Background(), os.Stdin, os.Stdout); err != nil && !errors.Is(err, context.Canceled) {
+	if err := srv.Run(context.Background(), &sdk.StdioTransport{}); err != nil && !errors.Is(err, context.Canceled) {
 		log.Fatal(err)
 	}
 }

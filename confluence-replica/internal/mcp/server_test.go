@@ -2,9 +2,12 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
+
+	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 type fakeBackend struct{}
@@ -73,42 +76,87 @@ func (f fakeBackend) GetTree(_ context.Context, rootPageID string, depth int, li
 	}, nil
 }
 
-func TestHandleToolCallSearch(t *testing.T) {
+func connectClient(t *testing.T, s *Server) *sdk.ClientSession {
+	t.Helper()
+	ctx := context.Background()
+	client := sdk.NewClient(&sdk.Implementation{Name: "test-client", Version: "0.1.0"}, nil)
+	t1, t2 := sdk.NewInMemoryTransports()
+	if _, err := s.Connect(ctx, t1, nil); err != nil {
+		t.Fatalf("connect server: %v", err)
+	}
+	cs, err := client.Connect(ctx, t2, nil)
+	if err != nil {
+		t.Fatalf("connect client: %v", err)
+	}
+	return cs
+}
+
+func TestSearchToolExposedAndCallable(t *testing.T) {
 	s := NewServer(fakeBackend{})
-	out, err := s.handleToolCall(context.Background(), toolCallParams{
+	cs := connectClient(t, s)
+	defer cs.Close()
+
+	toolNames := map[string]bool{}
+	for tool, err := range cs.Tools(context.Background(), nil) {
+		if err != nil {
+			t.Fatalf("tools iterator error: %v", err)
+		}
+		toolNames[tool.Name] = true
+	}
+	for _, expected := range []string{"search", "ask", "get_tree"} {
+		if !toolNames[expected] {
+			t.Fatalf("expected tool %q to be listed", expected)
+		}
+	}
+
+	resp, err := cs.CallTool(context.Background(), &sdk.CallToolParams{
 		Name:      "search",
 		Arguments: map[string]any{"query": "critical", "limit": 3},
 	})
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("call search: %v", err)
 	}
-	if len(out.Content) == 0 {
-		t.Fatalf("expected tool content")
+	if len(resp.Content) == 0 {
+		t.Fatalf("expected content in search response")
 	}
-	if !strings.Contains(out.Content[0].Text, "Runbook") {
-		t.Fatalf("expected title in tool output: %s", out.Content[0].Text)
+	tc, ok := resp.Content[0].(*sdk.TextContent)
+	if !ok {
+		t.Fatalf("expected text content, got %T", resp.Content[0])
+	}
+	if !strings.Contains(tc.Text, "Runbook") {
+		t.Fatalf("expected title in content: %s", tc.Text)
+	}
+	raw, _ := json.Marshal(resp.StructuredContent)
+	if !strings.Contains(string(raw), "\"page_id\":\"42\"") {
+		t.Fatalf("expected structured hit payload: %s", string(raw))
 	}
 }
 
-func TestHandleResourceReadPage(t *testing.T) {
+func TestReadPageResource(t *testing.T) {
 	s := NewServer(fakeBackend{})
-	out, err := s.handleResourceRead(context.Background(), resourceReadParams{
+	cs := connectClient(t, s)
+	defer cs.Close()
+
+	resp, err := cs.ReadResource(context.Background(), &sdk.ReadResourceParams{
 		URI: "confluence://page/42",
 	})
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("read resource: %v", err)
 	}
-	if len(out.Contents) != 1 {
-		t.Fatalf("expected one content item")
+	if len(resp.Contents) != 1 {
+		t.Fatalf("expected one resource content item")
 	}
-	if !strings.Contains(out.Contents[0].Text, "\"page_id\":\"42\"") {
-		t.Fatalf("expected page payload: %s", out.Contents[0].Text)
+	if !strings.Contains(resp.Contents[0].Text, "\"page_id\":\"42\"") {
+		t.Fatalf("expected page payload: %s", resp.Contents[0].Text)
 	}
 }
 
-func TestHandlePromptGetCompareVersions(t *testing.T) {
+func TestCompareVersionsPrompt(t *testing.T) {
 	s := NewServer(fakeBackend{})
-	out, err := s.handlePromptGet(promptGetParams{
+	cs := connectClient(t, s)
+	defer cs.Close()
+
+	resp, err := cs.GetPrompt(context.Background(), &sdk.GetPromptParams{
 		Name: "compare_versions",
 		Arguments: map[string]string{
 			"page_id":      "42",
@@ -117,13 +165,16 @@ func TestHandlePromptGetCompareVersions(t *testing.T) {
 		},
 	})
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("get prompt: %v", err)
 	}
-	if len(out.Messages) == 0 {
+	if len(resp.Messages) == 0 {
 		t.Fatalf("expected prompt message")
 	}
-	txt := out.Messages[0].Content.Text
-	if !strings.Contains(txt, "from version 3 to version 7") {
-		t.Fatalf("expected compare prompt text, got: %s", txt)
+	tc, ok := resp.Messages[0].Content.(*sdk.TextContent)
+	if !ok {
+		t.Fatalf("expected text prompt content, got %T", resp.Messages[0].Content)
+	}
+	if !strings.Contains(tc.Text, "from version 3 to version 7") {
+		t.Fatalf("expected compare prompt text, got: %s", tc.Text)
 	}
 }

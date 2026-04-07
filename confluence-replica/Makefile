@@ -13,7 +13,7 @@ DATE ?= $(shell date +%F)
 .PHONY: help env-init data-dir runtime-up runtime-up-no-ollama runtime-down \
 	postgres-up postgres-down postgres-restart postgres-ps postgres-logs \
 	db-migrate db-vector-check db-shell api bootstrap sync digest test \
-	build build-api build-replica build-mcp mcp
+	build build-api build-replica build-mcp mcp mcp-smoke
 
 help:
 	@echo "Common targets:"
@@ -30,6 +30,7 @@ help:
 	@echo "  make build               # Build both binaries into ./bin"
 	@echo "  make api                 # Run API service"
 	@echo "  make mcp                 # Run MCP stdio server"
+	@echo "  make mcp-smoke           # MCP handshake + tools/resources/prompts smoke test"
 	@echo "  make bootstrap PARENT_ID=<id>"
 	@echo "  make sync PARENT_ID=<id>"
 	@echo "  make digest [DATE=YYYY-MM-DD]"
@@ -84,6 +85,9 @@ api:
 
 mcp:
 	@CONF_REPLICA_CONFIG="$(CONFIG)" go run ./cmd/mcp
+
+mcp-smoke:
+	@./scripts/mcp-smoke.py --config "$(CONFIG)"
 
 build: build-api build-replica build-mcp
 

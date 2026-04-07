@@ -39,6 +39,7 @@ Non-goal: expose `bootstrap/sync/digest jobs` through MCP.
 ### Binary
 
 - `go run ./cmd/mcp --config config/config.yaml`
+- MCP server implementation uses official SDK: `github.com/modelcontextprotocol/go-sdk`
 
 ### Resources
 
@@ -66,6 +67,94 @@ Non-goal: expose `bootstrap/sync/digest jobs` through MCP.
 
 HTTP API is internal truth for services and operations.  
 MCP is a narrow, stable entrance for agents.
+
+## Add this MCP to Codex and Cline
+
+### 1) Build the MCP binary
+
+From `confluence-replica` directory:
+
+- `make build-mcp`
+
+This creates:
+
+- `./bin/mcp`
+
+### 2) Codex desktop config
+
+Edit `~/.codex/config.toml` and add:
+
+```toml
+[mcp_servers.confluence_replica]
+command = "/Users/${USER}/dev/codex/confluence-replica/scripts/start-confluence-replica-mcp.sh"
+args = []
+```
+
+Then restart Codex (or reload MCP servers in app settings).
+
+Alternative without binary build:
+
+```toml
+[mcp_servers.confluence_replica]
+command = "go"
+args = ["run", "./cmd/mcp", "--config", "config/config.yaml"]
+cwd = "/Users/${USER}/dev/codex/confluence-replica"
+```
+
+Debug logs for this MCP launcher:
+
+- `~/.codex/log/confluence-replica-mcp.log`
+
+### 3) Cline config
+
+Cline uses `cline_mcp_settings.json`.
+Typical locations:
+
+- Cline CLI: `~/.cline/data/settings/cline_mcp_settings.json`
+- Cline VS Code extension (macOS):
+  `/Users/<you>/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json`
+
+Add server entry:
+
+```json
+{
+  "mcpServers": {
+    "confluence-replica": {
+      "command": "/Users/${USER}/dev/codex/confluence-replica/bin/mcp",
+      "args": [
+        "--config",
+        "/Users/${USER}/dev/codex/confluence-replica/config/config.yaml"
+      ],
+      "disabled": false
+    }
+  }
+}
+```
+
+Or via CLI:
+
+- `cline mcp add confluence-replica -- /Users/${USER}/dev/codex/confluence-replica/bin/mcp --config /Users/${USER}/dev/codex/confluence-replica/config/config.yaml`
+
+If you want dedicated logs with Cline too, use the launcher script:
+
+- `cline mcp add confluence-replica -- /Users/${USER}/dev/codex/confluence-replica/scripts/start-confluence-replica-mcp.sh`
+
+### 4) Smoke check
+
+After connecting, verify in the client that MCP exposes:
+
+- tools: `search`, `ask`, `get_tree`
+- resource templates: `confluence://page/{id}`, `confluence://chunk/{id}`, `confluence://digest/{date}`
+- prompts: `daily_brief`, `investigate_page`, `compare_versions`
+
+Local smoke without any AI client:
+
+- `make mcp-smoke`
+
+Or directly:
+
+- `./scripts/mcp-smoke.py --config config/config.yaml`
+- `./scripts/mcp-smoke.py --go-run --config config/config.yaml`
 
 ## Operations
 
@@ -128,6 +217,7 @@ Example to save PAT:
 - `go run ./cmd/replica digest --config config/config.yaml --date 2026-04-07`
 - `go run ./cmd/api --config config/config.yaml`
 - `go run ./cmd/mcp --config config/config.yaml`
+- `make mcp-smoke`
 
 ### Internal API v1
 

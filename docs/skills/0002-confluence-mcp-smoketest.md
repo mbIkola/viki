@@ -40,7 +40,7 @@ export CONFLUENCE_PAT="<new_pat>"
 
 ## Текущая реализация (2026-04-07)
 
-- Добавлен запускатор: [`scripts/start-confluence-mcp.sh`](/Users/nkharche/dev/codex/scripts/start-confluence-mcp.sh)
+- Добавлен запускатор: [`scripts/start-confluence-mcp.sh`](./dev/codex/scripts/start-confluence-mcp.sh)
   - Берет PAT из Keychain service `codex_confluence_pat` (или из `CONFLUENCE_PAT`).
   - Стартует `mcp-atlassian` в `read-only` режиме для space `UGBUPD`.
   - Приоритет запуска: системный `mcp-atlassian` (например, установленный через `brew`), затем `uvx` как fallback.
@@ -48,7 +48,7 @@ export CONFLUENCE_PAT="<new_pat>"
 
 ```toml
 [mcp_servers.confluence]
-command = "/Users/nkharche/dev/codex/scripts/start-confluence-mcp.sh"
+command = "/Users/${USER}/dev/codex/scripts/start-confluence-mcp.sh"
 args = []
 ```
 

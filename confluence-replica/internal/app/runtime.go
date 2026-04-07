@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -50,7 +51,15 @@ type Runtime struct {
 	RAG    *rag.Engine
 }
 
+type LoadOptions struct {
+	RequireConfluenceToken bool
+}
+
 func LoadConfig(path string) (Config, error) {
+	return LoadConfigWithOptions(path, LoadOptions{RequireConfluenceToken: true})
+}
+
+func LoadConfigWithOptions(path string, opts LoadOptions) (Config, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return Config{}, err
@@ -65,9 +74,14 @@ func LoadConfig(path string) (Config, error) {
 	if cfg.Confluence.Token == "" {
 		cfg.Confluence.Token = os.Getenv("CONFLUENCE_PAT")
 	}
-	cfg.Confluence.Token, err = resolveSecretRef(cfg.Confluence.Token)
-	if err != nil {
-		return Config{}, fmt.Errorf("resolve confluence token: %w", err)
+	if opts.RequireConfluenceToken {
+		cfg.Confluence.Token, err = resolveSecretRef(cfg.Confluence.Token)
+		if err != nil {
+			return Config{}, fmt.Errorf("resolve confluence token: %w", err)
+		}
+	} else if strings.HasPrefix(cfg.Confluence.Token, "keychain://") {
+		// Local-only runtimes (for MCP retrieval facade) should not require Confluence auth.
+		cfg.Confluence.Token = ""
 	}
 	if cfg.Confluence.RequestSec <= 0 {
 		cfg.Confluence.RequestSec = 30
