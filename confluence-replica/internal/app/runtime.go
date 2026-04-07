@@ -120,7 +120,7 @@ func NewRuntime(ctx context.Context, cfg Config) (*Runtime, error) {
 	ing := ingest.NewService(cl, st, emb)
 	digest := ingest.NewDigestService(st)
 	searchService := search.NewService(st, emb)
-	ragEngine := rag.NewEngine(searchService, rag.EchoLLM{})
+	ragEngine := rag.NewEngine(searchService, rag.DeterministicLLM{})
 	return &Runtime{Config: cfg, Store: st, Ingest: ing, Digest: digest, Search: searchService, RAG: ragEngine}, nil
 }
 

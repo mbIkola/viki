@@ -13,7 +13,7 @@ DATE ?= $(shell date +%F)
 .PHONY: help env-init data-dir runtime-up runtime-up-no-ollama runtime-down \
 	postgres-up postgres-down postgres-restart postgres-ps postgres-logs \
 	db-migrate db-vector-check db-shell api bootstrap sync digest test \
-	build build-api build-replica
+	build build-api build-replica build-mcp mcp
 
 help:
 	@echo "Common targets:"
@@ -29,6 +29,7 @@ help:
 	@echo "  make db-shell            # Open psql shell in postgres container"
 	@echo "  make build               # Build both binaries into ./bin"
 	@echo "  make api                 # Run API service"
+	@echo "  make mcp                 # Run MCP stdio server"
 	@echo "  make bootstrap PARENT_ID=<id>"
 	@echo "  make sync PARENT_ID=<id>"
 	@echo "  make digest [DATE=YYYY-MM-DD]"
@@ -81,7 +82,10 @@ db-shell:
 api:
 	@CONF_REPLICA_CONFIG="$(CONFIG)" go run ./cmd/api
 
-build: build-api build-replica
+mcp:
+	@CONF_REPLICA_CONFIG="$(CONFIG)" go run ./cmd/mcp
+
+build: build-api build-replica build-mcp
 
 build-api:
 	@mkdir -p "$(BIN_DIR)"
@@ -92,6 +96,11 @@ build-replica:
 	@mkdir -p "$(BIN_DIR)"
 	@go build -o "$(BIN_DIR)/replica" ./cmd/replica
 	@echo "built $(BIN_DIR)/replica"
+
+build-mcp:
+	@mkdir -p "$(BIN_DIR)"
+	@go build -o "$(BIN_DIR)/mcp" ./cmd/mcp
+	@echo "built $(BIN_DIR)/mcp"
 
 bootstrap:
 	@if [[ -z "$(PARENT_ID)" ]]; then echo "PARENT_ID is required"; exit 1; fi

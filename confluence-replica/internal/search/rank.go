@@ -4,6 +4,7 @@ import "sort"
 
 type Hit struct {
 	PageID         string  `json:"page_id"`
+	ChunkID        string  `json:"chunk_id,omitempty"`
 	Title          string  `json:"title"`
 	Snippet        string  `json:"snippet"`
 	Version        int     `json:"version"`

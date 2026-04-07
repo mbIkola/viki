@@ -43,6 +43,7 @@ func (s *Service) Query(ctx context.Context, query string, limit int) ([]Hit, er
 	for _, r := range rows {
 		hits = append(hits, Hit{
 			PageID:         r.PageID,
+			ChunkID:        r.ChunkID,
 			Version:        r.Version,
 			Title:          r.Title,
 			Snippet:        r.Snippet,
@@ -67,6 +68,7 @@ func (s *Service) Retrieve(ctx context.Context, query string, k int) ([]rag.Sear
 		out = append(out, rag.SearchHit{
 			PageID:  h.PageID,
 			Version: h.Version,
+			ChunkID: h.ChunkID,
 			Title:   h.Title,
 			Snippet: h.Snippet,
 			Score:   h.FinalScore,

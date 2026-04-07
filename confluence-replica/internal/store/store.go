@@ -73,6 +73,7 @@ type ChangeEvent struct {
 
 type SearchRow struct {
 	PageID         string
+	ChunkID        string
 	Version        int
 	Title          string
 	Snippet        string
@@ -82,6 +83,42 @@ type SearchRow struct {
 	ParentDistance float64
 	VersionRecency float64
 	TagMatch       float64
+}
+
+type PageDocument struct {
+	PageID       string
+	SpaceKey     string
+	Title        string
+	ParentPageID string
+	Status       string
+	CurrentVer   int
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+	Labels       []string
+	Version      int
+	BodyRaw      string
+	BodyNorm     string
+	BodyHash     string
+	FetchedAt    time.Time
+}
+
+type ChunkDocument struct {
+	ChunkID    string
+	PageID     string
+	Version    int
+	Title      string
+	ChunkText  string
+	ChunkHash  string
+	TokenCount int
+}
+
+type TreeNode struct {
+	PageID       string
+	Title        string
+	ParentPageID string
+	CurrentVer   int
+	Depth        int
+	UpdatedAt    time.Time
 }
 
 type Store interface {
@@ -94,6 +131,10 @@ type Store interface {
 	GetDigest(ctx context.Context, date time.Time) (string, error)
 	ListChangeEventsForDate(ctx context.Context, date time.Time) ([]ChangeEvent, error)
 	SearchHybrid(ctx context.Context, query string, embedding []float32, limit int) ([]SearchRow, error)
+	GetPageCurrent(ctx context.Context, pageID string) (PageDocument, error)
+	GetPageVersion(ctx context.Context, pageID string, version int) (PageDocument, error)
+	GetChunk(ctx context.Context, chunkID string) (ChunkDocument, error)
+	GetTree(ctx context.Context, rootPageID string, depth int, limit int) ([]TreeNode, error)
 }
 
 type PostgresStore struct {
@@ -280,6 +321,122 @@ func (s *PostgresStore) GetDigest(ctx context.Context, date time.Time) (string, 
 	return md, nil
 }
 
+func (s *PostgresStore) GetPageCurrent(ctx context.Context, pageID string) (PageDocument, error) {
+	return s.GetPageVersion(ctx, pageID, 0)
+}
+
+func (s *PostgresStore) GetPageVersion(ctx context.Context, pageID string, version int) (PageDocument, error) {
+	query := `
+		SELECT
+			p.page_id,
+			p.space_key,
+			p.title,
+			COALESCE(p.parent_page_id, ''),
+			p.status,
+			p.current_version,
+			p.created_at,
+			p.updated_at,
+			p.labels_jsonb,
+			v.version_number,
+			v.body_raw,
+			v.body_norm,
+			v.body_hash,
+			v.fetched_at
+		FROM pages p
+		JOIN page_versions v ON v.page_id = p.page_id
+		WHERE p.page_id = $1
+		  AND v.version_number = CASE WHEN $2 <= 0 THEN p.current_version ELSE $2 END
+	`
+	var (
+		doc       PageDocument
+		labelsRaw []byte
+	)
+	err := s.pool.QueryRow(ctx, query, pageID, version).Scan(
+		&doc.PageID,
+		&doc.SpaceKey,
+		&doc.Title,
+		&doc.ParentPageID,
+		&doc.Status,
+		&doc.CurrentVer,
+		&doc.CreatedAt,
+		&doc.UpdatedAt,
+		&labelsRaw,
+		&doc.Version,
+		&doc.BodyRaw,
+		&doc.BodyNorm,
+		&doc.BodyHash,
+		&doc.FetchedAt,
+	)
+	if err != nil {
+		return PageDocument{}, err
+	}
+	if len(labelsRaw) > 0 {
+		_ = json.Unmarshal(labelsRaw, &doc.Labels)
+	}
+	return doc, nil
+}
+
+func (s *PostgresStore) GetChunk(ctx context.Context, chunkID string) (ChunkDocument, error) {
+	var doc ChunkDocument
+	err := s.pool.QueryRow(ctx, `
+		SELECT c.chunk_id, c.page_id, c.version_number, p.title, c.chunk_text, c.chunk_hash, c.token_count
+		FROM page_chunks c
+		JOIN pages p ON p.page_id = c.page_id
+		WHERE c.chunk_id = $1
+	`, chunkID).Scan(
+		&doc.ChunkID,
+		&doc.PageID,
+		&doc.Version,
+		&doc.Title,
+		&doc.ChunkText,
+		&doc.ChunkHash,
+		&doc.TokenCount,
+	)
+	if err != nil {
+		return ChunkDocument{}, err
+	}
+	return doc, nil
+}
+
+func (s *PostgresStore) GetTree(ctx context.Context, rootPageID string, depth int, limit int) ([]TreeNode, error) {
+	if depth < 0 {
+		depth = 0
+	}
+	if limit <= 0 {
+		limit = 200
+	}
+	rows, err := s.pool.Query(ctx, `
+		WITH RECURSIVE tree AS (
+			SELECT p.page_id, p.title, COALESCE(p.parent_page_id, '') AS parent_page_id, p.current_version, p.updated_at, 0 AS depth
+			FROM pages p
+			WHERE p.page_id = $1
+			UNION ALL
+			SELECT c.page_id, c.title, COALESCE(c.parent_page_id, '') AS parent_page_id, c.current_version, c.updated_at, t.depth + 1
+			FROM pages c
+			JOIN tree t ON c.parent_page_id = t.page_id
+			WHERE t.depth < $2
+		)
+		SELECT page_id, title, parent_page_id, current_version, updated_at, depth
+		FROM tree
+		ORDER BY depth ASC, updated_at DESC
+		LIMIT $3
+	`, rootPageID, depth, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]TreeNode, 0)
+	for rows.Next() {
+		var n TreeNode
+		if err := rows.Scan(&n.PageID, &n.Title, &n.ParentPageID, &n.CurrentVer, &n.UpdatedAt, &n.Depth); err != nil {
+			return nil, err
+		}
+		out = append(out, n)
+	}
+	return out, rows.Err()
+}
+
 func (s *PostgresStore) ListChangeEventsForDate(ctx context.Context, date time.Time) ([]ChangeEvent, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT run_id, page_id, event_type, COALESCE(old_version, 0), COALESCE(new_version, 0),
@@ -317,6 +474,7 @@ func (s *PostgresStore) searchFTSOnly(ctx context.Context, query string, limit i
 			SELECT
 				c.page_id,
 				c.version_number,
+				c.chunk_id,
 				LEFT(c.chunk_text, 240) AS snippet,
 				ts_rank_cd(c.fts_tsv, plainto_tsquery('english', $1)) AS fts_score
 			FROM page_chunks c
@@ -326,6 +484,7 @@ func (s *PostgresStore) searchFTSOnly(ctx context.Context, query string, limit i
 		)
 		SELECT
 			f.page_id,
+			f.chunk_id,
 			f.version_number,
 			p.title,
 			f.snippet,
@@ -347,7 +506,7 @@ func (s *PostgresStore) searchFTSOnly(ctx context.Context, query string, limit i
 	out := make([]SearchRow, 0)
 	for rows.Next() {
 		var r SearchRow
-		if err := rows.Scan(&r.PageID, &r.Version, &r.Title, &r.Snippet, &r.FTSScore, &r.SemanticScore, &r.Freshness, &r.ParentDistance, &r.VersionRecency, &r.TagMatch); err != nil {
+		if err := rows.Scan(&r.PageID, &r.ChunkID, &r.Version, &r.Title, &r.Snippet, &r.FTSScore, &r.SemanticScore, &r.Freshness, &r.ParentDistance, &r.VersionRecency, &r.TagMatch); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
@@ -363,6 +522,7 @@ func (s *PostgresStore) searchHybridWithEmbedding(ctx context.Context, query str
 			SELECT
 				c.page_id,
 				c.version_number,
+				c.chunk_id,
 				LEFT(c.chunk_text, 240) AS snippet,
 				ts_rank_cd(c.fts_tsv, plainto_tsquery('english', $1)) AS fts_score
 			FROM page_chunks c
@@ -374,6 +534,7 @@ func (s *PostgresStore) searchHybridWithEmbedding(ctx context.Context, query str
 			SELECT
 				ce.page_id,
 				ce.version_number,
+				ce.chunk_id,
 				LEFT(c.chunk_text, 240) AS snippet,
 				(1 - (ce.embedding <=> $2::vector)) AS semantic_score
 			FROM chunk_embeddings ce
@@ -389,15 +550,17 @@ func (s *PostgresStore) searchHybridWithEmbedding(ctx context.Context, query str
 			SELECT
 				COALESCE(fts.page_id, sem.page_id) AS page_id,
 				COALESCE(fts.version_number, sem.version_number) AS version_number,
+				COALESCE(fts.chunk_id, sem.chunk_id) AS chunk_id,
 				COALESCE(fts.snippet, sem.snippet) AS snippet,
 				COALESCE(MAX(fts.fts_score), 0.0) AS fts_score,
 				COALESCE(MAX(sem.semantic_score), 0.0) AS semantic_score
 			FROM fts
 			FULL OUTER JOIN sem ON sem.page_id = fts.page_id AND sem.version_number = fts.version_number
-			GROUP BY 1,2,3
+			GROUP BY 1,2,3,4
 		)
 		SELECT
 			c.page_id,
+			c.chunk_id,
 			c.version_number,
 			p.title,
 			c.snippet,
@@ -420,7 +583,7 @@ func (s *PostgresStore) searchHybridWithEmbedding(ctx context.Context, query str
 	out := make([]SearchRow, 0)
 	for rows.Next() {
 		var r SearchRow
-		if err := rows.Scan(&r.PageID, &r.Version, &r.Title, &r.Snippet, &r.FTSScore, &r.SemanticScore, &r.Freshness, &r.ParentDistance, &r.VersionRecency, &r.TagMatch); err != nil {
+		if err := rows.Scan(&r.PageID, &r.ChunkID, &r.Version, &r.Title, &r.Snippet, &r.FTSScore, &r.SemanticScore, &r.Freshness, &r.ParentDistance, &r.VersionRecency, &r.TagMatch); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
