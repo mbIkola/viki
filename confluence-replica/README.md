@@ -86,8 +86,8 @@ Edit `~/.codex/config.toml` and add:
 
 ```toml
 [mcp_servers.confluence_replica]
-command = "/Users/${USER}/dev/codex/confluence-replica/scripts/start-confluence-replica-mcp.sh"
-args = []
+command = "/Users/${USER}/dev/codex/confluence-replica/bin/mcp"
+args = ["--config", "/Users/${USER}/dev/codex/confluence-replica/config/config.yaml"]
 ```
 
 Then restart Codex (or reload MCP servers in app settings).
@@ -100,10 +100,6 @@ command = "go"
 args = ["run", "./cmd/mcp", "--config", "config/config.yaml"]
 cwd = "/Users/${USER}/dev/codex/confluence-replica"
 ```
-
-Debug logs for this MCP launcher:
-
-- `~/.codex/log/confluence-replica-mcp.log`
 
 ### 3) Cline config
 
@@ -134,10 +130,6 @@ Add server entry:
 Or via CLI:
 
 - `cline mcp add confluence-replica -- /Users/${USER}/dev/codex/confluence-replica/bin/mcp --config /Users/${USER}/dev/codex/confluence-replica/config/config.yaml`
-
-If you want dedicated logs with Cline too, use the launcher script:
-
-- `cline mcp add confluence-replica -- /Users/${USER}/dev/codex/confluence-replica/scripts/start-confluence-replica-mcp.sh`
 
 ### 4) Smoke check
 

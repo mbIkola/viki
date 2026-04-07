@@ -2,7 +2,7 @@
 
 ## High-level design
 
-`confluence-replica` разделен на два контура:
+`confluence-replica` по-прежнему живет в двух контурах. Вселенная от этого не стала добрее, но зато все работает быстрее и стабильнее.
 
 1. Внутренний сервисный контур (Go + Postgres):
    - ingest (`bootstrap` / `sync`) тянет дерево страниц из Confluence;
@@ -10,10 +10,10 @@
    - hybrid search и deterministic RAG работают по локальному индексу;
    - digest строит ежедневные сводки изменений.
 
-2. Агентский контур (MCP facade):
+2. Агентский контур (`confluence-replica-mcp` facade):
    - отдельный бинарь `cmd/mcp`;
    - реализован через `modelcontextprotocol/go-sdk`;
-   - публикует только retrieval-интерфейс:
+   - публикует retrieval-only интерфейс:
      - tools: `search`, `ask`, `get_tree`
      - resource templates: `confluence://page/{page_id}`, `confluence://chunk/{chunk_id}`, `confluence://digest/{date}`
      - prompts: `daily_brief`, `investigate_page`, `compare_versions`
@@ -32,6 +32,36 @@ flowchart LR
     F --> G["Agents (Codex/Cline/Claude)"]
 ```
 
+## Runtime rules that matter
+
+- MCP можно запускать в local-only режиме без Confluence PAT:
+  - `cmd/mcp` загружает конфиг с `RequireConfluenceToken=false`;
+  - если в конфиге `keychain://...`, MCP не падает из-за секрета и работает только по локальной реплике.
+
+- Эмбеддинги теперь model-agnostic по размерности:
+  - в `chunk_embeddings` хранится `embedding_dim`;
+  - hybrid vector search фильтрует кандидатов по `embedding_dim`;
+  - это устраняет конфликт вида `expected 1536 dimensions, not 768`.
+  - миграция: `migrations/002_embedding_dimension_compat.sql`.
+
+- Логирование унифицировано во всех бинарях:
+  - дефолт: `INFO`;
+  - `logging.level` в конфиге (`ERROR|INFO|DEBUG`);
+  - `--quiet` принудительно ставит `ERROR`;
+  - `--verbose` принудительно ставит `DEBUG`.
+
+- PAT храним в macOS Keychain:
+  - в `config/config.yaml`: `confluence.token: "keychain://codex_confluence_pat"` (опционально `?account=<user>`);
+  - в рантайме читается через `security find-generic-password`.
+  - полезная проверка: `security find-generic-password -s codex_confluence_pat -w`
+
+- Локальный runtime-ритуал:
+  - `make runtime-up` (поднимет Postgres и при необходимости Ollama + pull модели);
+  - `make runtime-up-no-ollama` (если Ollama уже живет отдельно);
+  - `make db-migrate`;
+  - `make build` / `make build-mcp`;
+  - `make mcp-smoke`.
+
 ## Dependencies
 
 ### Runtime dependencies
@@ -44,12 +74,12 @@ flowchart LR
 
 ### Infra / operational dependencies
 
-- Docker/Compose для локального Postgres (рекомендуемый путь)
+- Docker/Compose для локального Postgres
 - Конфиг `config/config.yaml` с рабочим `database.dsn`
 - Для ingest из Confluence:
   - Confluence URL
-  - PAT/token (может быть через Keychain secret ref)
-- Для semantic embeddings (опционально, но полезно):
+  - PAT/token через Keychain reference (`keychain://codex_confluence_pat`)
+- Для semantic embeddings:
   - Ollama endpoint + embedding model
 
 ### Agent integration dependencies
@@ -64,7 +94,6 @@ flowchart LR
 - [ ] Добавить полноценный integration-smoke с реальным MCP client handshake в CI (не только локальный скрипт).
 - [ ] Реализовать явный `get_page_version` (с выбором версии), сейчас через MCP читается только current page resource.
 - [ ] Реализовать отдельный инструмент сравнения версий как tool (сейчас `compare_versions` есть только как prompt-шаблон).
-- [ ] Добавить pagination/limit guards для больших деревьев и больших выдач search с более строгими server-side лимитами.
 - [ ] Улучшить observability MCP слоя: структурные метрики по latency/errors на tool/resource/prompt handlers.
 - [ ] Зафиксировать единую error taxonomy для MCP (resource not found vs validation vs backend unavailable).
-- [ ] Добавить e2e сценарии “offline mode” как отдельные тесты/чеклист (MCP работает при недоступном upstream Confluence, если локальный индекс уже есть).
+- [ ] Добавить e2e сценарии offline mode как отдельные тесты/чеклист (MCP работает при недоступном upstream Confluence, если локальный индекс уже есть).
