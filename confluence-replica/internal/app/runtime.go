@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 
 	"confluence-replica/internal/confluence"
 	"confluence-replica/internal/ingest"
+	"confluence-replica/internal/logx"
 	"confluence-replica/internal/rag"
 	"confluence-replica/internal/search"
 	"confluence-replica/internal/store"
@@ -28,6 +30,9 @@ type Config struct {
 	API struct {
 		Addr string `yaml:"addr"`
 	} `yaml:"api"`
+	Logging struct {
+		Level string `yaml:"level"`
+	} `yaml:"logging"`
 	Embeddings struct {
 		Provider   string `yaml:"provider"`
 		BaseURL    string `yaml:"base_url"`
@@ -70,6 +75,15 @@ func LoadConfig(path string) (Config, error) {
 	if cfg.API.Addr == "" {
 		cfg.API.Addr = ":8080"
 	}
+	if cfg.Logging.Level == "" {
+		cfg.Logging.Level = os.Getenv("LOG_LEVEL")
+	}
+	if cfg.Logging.Level == "" {
+		cfg.Logging.Level = "INFO"
+	}
+	if _, err := logx.ParseLevel(cfg.Logging.Level); err != nil {
+		return Config{}, err
+	}
 	if cfg.Embeddings.Provider == "" {
 		cfg.Embeddings.Provider = "ollama"
 	}
@@ -92,6 +106,8 @@ func LoadConfig(path string) (Config, error) {
 }
 
 func NewRuntime(ctx context.Context, cfg Config) (*Runtime, error) {
+	logx.Infof("[runtime] init database_dsn=%s", sanitizeDSN(cfg.Database.DSN))
+	logx.Infof("[runtime] embeddings provider=%s base_url=%s model=%s", cfg.Embeddings.Provider, cfg.Embeddings.BaseURL, cfg.Embeddings.Model)
 	st, err := store.NewPostgresStore(ctx, cfg.Database.DSN)
 	if err != nil {
 		return nil, err
@@ -112,4 +128,20 @@ func (r *Runtime) Close() {
 	if r.Store != nil {
 		r.Store.Close()
 	}
+}
+
+func sanitizeDSN(dsn string) string {
+	u, err := url.Parse(dsn)
+	if err != nil {
+		return dsn
+	}
+	if u.User != nil {
+		user := u.User.Username()
+		if user != "" {
+			u.User = url.UserPassword(user, "xxxxx")
+		} else {
+			u.User = url.User("xxxxx")
+		}
+	}
+	return u.String()
 }

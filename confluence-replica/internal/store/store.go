@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"confluence-replica/internal/logx"
+
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -106,7 +108,9 @@ func NewPostgresStore(ctx context.Context, dsn string) (*PostgresStore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create pool: %w", err)
 	}
-	return &PostgresStore{pool: pool}, nil
+	st := &PostgresStore{pool: pool}
+	logx.Infof("[store] postgres_connected")
+	return st, nil
 }
 
 func (s *PostgresStore) Close() {
@@ -122,6 +126,9 @@ func (s *PostgresStore) BeginSyncRun(ctx context.Context, mode string) (int64, e
 		VALUES ($1, 'running', now())
 		RETURNING run_id
 	`, mode).Scan(&id)
+	if err == nil {
+		logx.Infof("[store] sync_run_started mode=%s run_id=%d", mode, id)
+	}
 	return id, err
 }
 
@@ -131,6 +138,9 @@ func (s *PostgresStore) FinishSyncRun(ctx context.Context, runID int64, status s
 		SET status=$2, finished_at=now(), stats_jsonb=$3::jsonb
 		WHERE run_id=$1
 	`, runID, status, toJSON(stats))
+	if err == nil {
+		logx.Infof("[store] sync_run_finished run_id=%d status=%s stats=%s", runID, status, toJSON(stats))
+	}
 	return err
 }
 
@@ -182,17 +192,23 @@ func (s *PostgresStore) UpsertPageWithVersion(ctx context.Context, p Page, v Pag
 		}
 		if len(c.Embedding) > 0 {
 			_, err = tx.Exec(ctx, `
-				INSERT INTO chunk_embeddings(page_id, version_number, chunk_id, embedding)
-				VALUES($1,$2,$3,$4::vector)
-				ON CONFLICT (page_id, version_number, chunk_id) DO UPDATE SET embedding=excluded.embedding
-			`, c.PageID, c.Version, c.ChunkID, vectorLiteral(c.Embedding))
+				INSERT INTO chunk_embeddings(page_id, version_number, chunk_id, embedding, embedding_dim)
+				VALUES($1,$2,$3,$4::vector,$5)
+				ON CONFLICT (page_id, version_number, chunk_id) DO UPDATE SET
+					embedding=excluded.embedding,
+					embedding_dim=excluded.embedding_dim
+			`, c.PageID, c.Version, c.ChunkID, vectorLiteral(c.Embedding), len(c.Embedding))
 			if err != nil {
 				return err
 			}
 		}
 	}
 
-	return tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	logx.Debugf("[store] upsert_page page_id=%s version=%d chunks=%d tables=pages,page_versions,page_chunks,chunk_embeddings", p.PageID, v.Version, len(chunks))
+	return nil
 }
 
 func (s *PostgresStore) ListCurrentStates(ctx context.Context) ([]PageState, error) {
@@ -236,6 +252,7 @@ func (s *PostgresStore) InsertChangeEvents(ctx context.Context, events []ChangeE
 			return err
 		}
 	}
+	logx.Debugf("[store] change_events_inserted count=%d table=change_events", len(events))
 	return nil
 }
 
@@ -248,6 +265,9 @@ func (s *PostgresStore) SaveDigest(ctx context.Context, date time.Time, markdown
 			markdown=excluded.markdown,
 			stats_jsonb=excluded.stats_jsonb
 	`, date.Format("2006-01-02"), markdown, toJSON(stats))
+	if err == nil {
+		logx.Infof("[store] digest_saved date=%s bytes=%d table=daily_digests", date.Format("2006-01-02"), len(markdown))
+	}
 	return err
 }
 
@@ -337,6 +357,7 @@ func (s *PostgresStore) searchFTSOnly(ctx context.Context, query string, limit i
 
 func (s *PostgresStore) searchHybridWithEmbedding(ctx context.Context, query string, embedding []float32, limit int) ([]SearchRow, error) {
 	vector := vectorLiteral(embedding)
+	dim := len(embedding)
 	rows, err := s.pool.Query(ctx, `
 		WITH fts AS (
 			SELECT
@@ -360,6 +381,7 @@ func (s *PostgresStore) searchHybridWithEmbedding(ctx context.Context, query str
 				ON c.page_id = ce.page_id
 				AND c.version_number = ce.version_number
 				AND c.chunk_id = ce.chunk_id
+			WHERE ce.embedding_dim = $4
 			ORDER BY ce.embedding <=> $2::vector
 			LIMIT $3
 		),
@@ -389,7 +411,7 @@ func (s *PostgresStore) searchHybridWithEmbedding(ctx context.Context, query str
 		JOIN pages p ON p.page_id = c.page_id
 		ORDER BY (c.fts_score + c.semantic_score) DESC
 		LIMIT $3
-	`, query, vector, limit)
+	`, query, vector, limit, dim)
 	if err != nil {
 		return nil, err
 	}

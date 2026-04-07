@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"confluence-replica/internal/logx"
 )
 
 type Client struct {
@@ -110,6 +112,7 @@ func (c *Client) GetChildren(ctx context.Context, pageID string, start, limit in
 }
 
 func (c *Client) WalkTree(ctx context.Context, parentID string) ([]Page, error) {
+	logx.Infof("[confluence] walk_tree start parent_id=%s", parentID)
 	root, err := c.GetPage(ctx, parentID)
 	if err != nil {
 		return nil, err
@@ -143,10 +146,13 @@ func (c *Client) WalkTree(ctx context.Context, parentID string) ([]Page, error) 
 			start += 50
 		}
 	}
+	logx.Infof("[confluence] walk_tree done parent_id=%s pages=%d", parentID, len(out))
 	return out, nil
 }
 
 func (c *Client) get(ctx context.Context, u string, out any) error {
+	started := time.Now()
+	logx.Debugf("[confluence] request method=GET url=%s", u)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return err
@@ -158,9 +164,11 @@ func (c *Client) get(ctx context.Context, u string, out any) error {
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
+		logx.Errorf("[confluence] request_failed url=%s error=%v", u, err)
 		return err
 	}
 	defer resp.Body.Close()
+	logx.Debugf("[confluence] response url=%s status=%d duration_ms=%d", u, resp.StatusCode, time.Since(started).Milliseconds())
 	if resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 8*1024))
 		return fmt.Errorf("confluence http %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))

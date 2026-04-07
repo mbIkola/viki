@@ -10,6 +10,9 @@ confluence:
 api:
   addr: ":8080"
 
+logging:
+  level: "INFO"
+
 embeddings:
   provider: "ollama"
   base_url: "http://127.0.0.1:11434"

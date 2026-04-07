@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"log"
 	"net/http"
 	"os"
 	"time"
 
 	"confluence-replica/internal/app"
+	"confluence-replica/internal/logx"
 )
 
 type server struct {
@@ -31,12 +33,22 @@ type jobRequest struct {
 }
 
 func main() {
-	configPath := os.Getenv("CONF_REPLICA_CONFIG")
-	if configPath == "" {
-		configPath = "config/config.yaml"
+	defaultConfigPath := os.Getenv("CONF_REPLICA_CONFIG")
+	if defaultConfigPath == "" {
+		defaultConfigPath = "config/config.yaml"
 	}
-	cfg, err := app.LoadConfig(configPath)
+
+	fs := flag.NewFlagSet("api", flag.ExitOnError)
+	configPath := fs.String("config", defaultConfigPath, "path to config yaml")
+	quiet := fs.Bool("quiet", false, "set log level to ERROR")
+	verbose := fs.Bool("verbose", false, "set log level to DEBUG")
+	_ = fs.Parse(os.Args[1:])
+
+	cfg, err := app.LoadConfig(*configPath)
 	if err != nil {
+		log.Fatal(err)
+	}
+	if err := logx.Configure(cfg.Logging.Level, *quiet, *verbose); err != nil {
 		log.Fatal(err)
 	}
 	rt, err := app.NewRuntime(context.Background(), cfg)
@@ -54,7 +66,7 @@ func main() {
 	mux.HandleFunc("POST /jobs/sync", s.handleJobSync)
 	mux.HandleFunc("POST /jobs/digest", s.handleJobDigest)
 
-	log.Printf("api listening on %s", cfg.API.Addr)
+	logx.Infof("[api] listening addr=%s", cfg.API.Addr)
 	if err := http.ListenAndServe(cfg.API.Addr, mux); err != nil {
 		log.Fatal(err)
 	}

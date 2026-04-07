@@ -14,7 +14,7 @@ Local Confluence replica with hybrid search, daily diff digest, and RAG chat ove
    - `docker compose ps`
    - `docker compose logs postgres`
 5. Apply migrations:
-   - `cat migrations/001_init.sql | docker compose exec -T postgres psql -U postgres -d confluence_replica`
+   - `make db-migrate`
 6. Verify pgvector extension:
    - `docker compose exec -T postgres psql -U postgres -d confluence_replica -c "SELECT extname FROM pg_extension WHERE extname='vector';"`
 7. Optional one-shot launcher:
@@ -59,6 +59,29 @@ Plain token strings are still supported if you do not use keychain refs.
 - `make bootstrap PARENT_ID=<page_id>`
 - `make sync PARENT_ID=<page_id>`
 - `make digest DATE=2026-04-07`
+
+## Import logging
+
+`bootstrap` / `sync` now print human-readable logs with prefixes:
+
+- `[replica]` command-level context (mode, config, parent id)
+- `[confluence]` outbound HTTP requests and response status/latency
+- `[ingest]` pipeline progress per page (chunks/embeddings/save)
+- `[store]` DB persistence checkpoints (run start/finish, upserts, change events)
+
+Log level controls:
+
+- Config file: `logging.level` with values `ERROR`, `INFO`, `DEBUG`
+- Default: `INFO`
+- CLI override for commands:
+  - `--quiet` -> `ERROR`
+  - `--verbose` -> `DEBUG`
+  - `--quiet` and `--verbose` together are rejected
+
+Examples:
+
+- `go run ./cmd/replica sync --config config/config.yaml --parent-id <id> --verbose`
+- `go run ./cmd/api --config config/config.yaml --quiet`
 
 ## Commands
 

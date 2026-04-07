@@ -43,7 +43,8 @@ CREATE TABLE IF NOT EXISTS chunk_embeddings (
   page_id TEXT NOT NULL,
   version_number INTEGER NOT NULL,
   chunk_id TEXT NOT NULL,
-  embedding vector(1536) NOT NULL,
+  embedding vector NOT NULL,
+  embedding_dim INTEGER NOT NULL,
   PRIMARY KEY (page_id, version_number, chunk_id),
   FOREIGN KEY (page_id, version_number, chunk_id) REFERENCES page_chunks(page_id, version_number, chunk_id) ON DELETE CASCADE
 );
@@ -85,3 +86,4 @@ CREATE INDEX IF NOT EXISTS idx_pages_updated ON pages (updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_change_events_created ON change_events (created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_page_versions_lookup ON page_versions (page_id, version_number DESC);
 CREATE INDEX IF NOT EXISTS idx_chunk_embeddings_hnsw ON chunk_embeddings USING hnsw (embedding vector_cosine_ops);
+CREATE INDEX IF NOT EXISTS idx_chunk_embeddings_dim ON chunk_embeddings (embedding_dim);

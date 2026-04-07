@@ -6,12 +6,14 @@ CONFIG ?= config/config.yaml
 PG_DATA_DIR ?= $(HOME)/.local/viki/confluence/postgres-data
 POSTGRES_DB ?= confluence_replica
 POSTGRES_USER ?= postgres
+BIN_DIR ?= bin
 PARENT_ID ?=
 DATE ?= $(shell date +%F)
 
 .PHONY: help env-init data-dir runtime-up runtime-up-no-ollama runtime-down \
 	postgres-up postgres-down postgres-restart postgres-ps postgres-logs \
-	db-migrate db-vector-check db-shell api bootstrap sync digest test
+	db-migrate db-vector-check db-shell api bootstrap sync digest test \
+	build build-api build-replica
 
 help:
 	@echo "Common targets:"
@@ -25,6 +27,7 @@ help:
 	@echo "  make db-migrate          # Apply migrations/001_init.sql"
 	@echo "  make db-vector-check     # Verify pgvector extension"
 	@echo "  make db-shell            # Open psql shell in postgres container"
+	@echo "  make build               # Build both binaries into ./bin"
 	@echo "  make api                 # Run API service"
 	@echo "  make bootstrap PARENT_ID=<id>"
 	@echo "  make sync PARENT_ID=<id>"
@@ -64,7 +67,10 @@ postgres-logs:
 	@docker compose logs -f postgres
 
 db-migrate:
-	@cat migrations/001_init.sql | docker compose exec -T postgres psql -U "$(POSTGRES_USER)" -d "$(POSTGRES_DB)"
+	@for f in $$(ls migrations/*.sql | sort); do \
+		echo "applying $$f"; \
+		cat "$$f" | docker compose exec -T postgres psql -v ON_ERROR_STOP=1 -U "$(POSTGRES_USER)" -d "$(POSTGRES_DB)"; \
+	done
 
 db-vector-check:
 	@docker compose exec -T postgres psql -U "$(POSTGRES_USER)" -d "$(POSTGRES_DB)" -c "SELECT extname FROM pg_extension WHERE extname='vector';"
@@ -74,6 +80,18 @@ db-shell:
 
 api:
 	@CONF_REPLICA_CONFIG="$(CONFIG)" go run ./cmd/api
+
+build: build-api build-replica
+
+build-api:
+	@mkdir -p "$(BIN_DIR)"
+	@go build -o "$(BIN_DIR)/api" ./cmd/api
+	@echo "built $(BIN_DIR)/api"
+
+build-replica:
+	@mkdir -p "$(BIN_DIR)"
+	@go build -o "$(BIN_DIR)/replica" ./cmd/replica
+	@echo "built $(BIN_DIR)/replica"
 
 bootstrap:
 	@if [[ -z "$(PARENT_ID)" ]]; then echo "PARENT_ID is required"; exit 1; fi

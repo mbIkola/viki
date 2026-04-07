@@ -10,6 +10,7 @@ import (
 
 	"confluence-replica/internal/confluence"
 	"confluence-replica/internal/diff"
+	"confluence-replica/internal/logx"
 	"confluence-replica/internal/store"
 )
 
@@ -36,25 +37,29 @@ func (s *Service) Sync(ctx context.Context, parentID string) error {
 }
 
 func (s *Service) syncInternal(ctx context.Context, parentID, mode string) error {
+	logx.Infof("[ingest] sync_start mode=%s parent_id=%s", mode, parentID)
 	runID, err := s.store.BeginSyncRun(ctx, mode)
 	if err != nil {
 		return err
 	}
+	logx.Infof("[ingest] sync_run_id mode=%s run_id=%d", mode, runID)
 
 	before, err := s.store.ListCurrentStates(ctx)
 	if err != nil {
 		_ = s.store.FinishSyncRun(ctx, runID, "failed", map[string]any{"error": err.Error()})
 		return err
 	}
+	logx.Infof("[ingest] snapshot_before pages=%d", len(before))
 
 	pages, err := s.client.WalkTree(ctx, parentID)
 	if err != nil {
 		_ = s.store.FinishSyncRun(ctx, runID, "failed", map[string]any{"error": err.Error()})
 		return err
 	}
+	logx.Infof("[ingest] fetched_pages pages=%d", len(pages))
 
 	after := make([]diff.PageState, 0, len(pages))
-	for _, p := range pages {
+	for idx, p := range pages {
 		bodyNorm := diff.NormalizeText(stripHTML(p.Body.Storage.Value))
 		bodyHash := diff.HashNormalizedText(bodyNorm)
 		parentID := ""
@@ -90,11 +95,13 @@ func (s *Service) syncInternal(ctx context.Context, parentID, mode string) error
 			_ = s.store.FinishSyncRun(ctx, runID, "failed", map[string]any{"error": err.Error()})
 			return err
 		}
+		logx.Debugf("[ingest] page_prepare index=%d/%d page_id=%s version=%d chunks=%d parent_id=%s", idx+1, len(pages), p.ID, p.Version.Number, len(chunks), parentID)
 
 		if err := s.store.UpsertPageWithVersion(ctx, up, v, chunks); err != nil {
 			_ = s.store.FinishSyncRun(ctx, runID, "failed", map[string]any{"error": err.Error()})
 			return err
 		}
+		logx.Debugf("[ingest] page_saved page_id=%s version=%d", p.ID, p.Version.Number)
 		after = append(after, diff.PageState{PageID: p.ID, Title: p.Title, ParentPageID: parentID, Version: p.Version.Number, BodyNormHash: bodyHash, Exists: true})
 	}
 
@@ -122,8 +129,13 @@ func (s *Service) syncInternal(ctx context.Context, parentID, mode string) error
 		_ = s.store.FinishSyncRun(ctx, runID, "failed", map[string]any{"error": err.Error()})
 		return err
 	}
+	logx.Infof("[ingest] changes_detected total=%d", len(events))
 
-	return s.store.FinishSyncRun(ctx, runID, "success", map[string]any{"pages_scanned": len(pages), "events": len(events)})
+	if err := s.store.FinishSyncRun(ctx, runID, "success", map[string]any{"pages_scanned": len(pages), "events": len(events)}); err != nil {
+		return err
+	}
+	logx.Infof("[ingest] sync_done mode=%s run_id=%d pages=%d events=%d", mode, runID, len(pages), len(events))
+	return nil
 }
 
 func toChunks(pageID string, version int, text string) []store.Chunk {
@@ -217,6 +229,9 @@ func (s *Service) fillChunkEmbeddings(ctx context.Context, chunks []store.Chunk)
 			return fmt.Errorf("embed chunk %s: %w", chunks[i].ChunkID, err)
 		}
 		chunks[i].Embedding = vec
+	}
+	if len(chunks) > 0 {
+		logx.Debugf("[ingest] embeddings_done chunks=%d", len(chunks))
 	}
 	return nil
 }

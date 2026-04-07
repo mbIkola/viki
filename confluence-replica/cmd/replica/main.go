@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"confluence-replica/internal/app"
+	"confluence-replica/internal/logx"
 )
 
 func main() {
@@ -31,6 +32,8 @@ func runSyncLike(mode string) {
 	fs := flag.NewFlagSet(mode, flag.ExitOnError)
 	configPath := fs.String("config", "config/config.yaml", "path to config yaml")
 	parentID := fs.String("parent-id", "", "confluence parent page id")
+	quiet := fs.Bool("quiet", false, "set log level to ERROR")
+	verbose := fs.Bool("verbose", false, "set log level to DEBUG")
 	_ = fs.Parse(os.Args[2:])
 
 	ctx := context.Background()
@@ -38,12 +41,17 @@ func runSyncLike(mode string) {
 	if err != nil {
 		log.Fatal(err)
 	}
+	if err := logx.Configure(cfg.Logging.Level, *quiet, *verbose); err != nil {
+		log.Fatal(err)
+	}
+	logx.Infof("[replica] command=%s config=%s", mode, *configPath)
 	if *parentID == "" {
 		*parentID = cfg.Confluence.DefaultParentID
 	}
 	if *parentID == "" {
 		log.Fatal("parent-id is required")
 	}
+	logx.Infof("[replica] import_params mode=%s parent_id=%s confluence_url=%s", mode, *parentID, cfg.Confluence.BaseURL)
 
 	rt, err := app.NewRuntime(ctx, cfg)
 	if err != nil {
@@ -66,18 +74,23 @@ func runDigest() {
 	fs := flag.NewFlagSet("digest", flag.ExitOnError)
 	configPath := fs.String("config", "config/config.yaml", "path to config yaml")
 	dateText := fs.String("date", time.Now().Format("2006-01-02"), "digest date")
+	quiet := fs.Bool("quiet", false, "set log level to ERROR")
+	verbose := fs.Bool("verbose", false, "set log level to DEBUG")
 	_ = fs.Parse(os.Args[2:])
 
 	day, err := time.Parse("2006-01-02", *dateText)
 	if err != nil {
 		log.Fatal(err)
 	}
-
 	ctx := context.Background()
 	cfg, err := app.LoadConfig(*configPath)
 	if err != nil {
 		log.Fatal(err)
 	}
+	if err := logx.Configure(cfg.Logging.Level, *quiet, *verbose); err != nil {
+		log.Fatal(err)
+	}
+	logx.Infof("[replica] command=digest config=%s date=%s", *configPath, day.Format("2006-01-02"))
 	rt, err := app.NewRuntime(ctx, cfg)
 	if err != nil {
 		log.Fatal(err)
