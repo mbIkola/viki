@@ -194,6 +194,24 @@ Example to save PAT:
 
 - `security add-generic-password -U -s codex_confluence_pat -a oracle-user -w "<your_pat_here>"`
 
+### Confluence roots (`parent_ids`)
+
+`confluence.parent_ids` is the source of truth for automatic sync scope.
+
+Example in `config/config.yaml`:
+
+```yaml
+confluence:
+  parent_ids:
+    - "925576634"
+    - "776923811"
+```
+
+Runtime behavior:
+
+- `sync/bootstrap` without manual parent overrides => **full scope** from `confluence.parent_ids`, deletions are allowed.
+- Manual overrides (`--parent-id`, `--parent-ids`, `PARENT_ID`, `PARENT_IDS`) => **partial scope**, no `deleted` events for other roots.
+
 ### Makefile quickstart
 
 - `make help`
@@ -201,14 +219,18 @@ Example to save PAT:
 - `make db-migrate`
 - `make db-vector-check`
 - `make api`
-- `make bootstrap PARENT_ID=<page_id>`
+- `make bootstrap` (uses `confluence.parent_ids`)
+- `make sync` (uses `confluence.parent_ids`)
+- `make sync PARENT_IDS=<page_id_1>,<page_id_2>`
 - `make sync PARENT_ID=<page_id>`
 - `make digest DATE=2026-04-07`
 
 ### Commands
 
-- `go run ./cmd/replica bootstrap --config config/config.yaml --parent-id <page_id>`
-- `go run ./cmd/replica sync --config config/config.yaml --parent-id <page_id>`
+- `go run ./cmd/replica bootstrap --config config/config.yaml`
+- `go run ./cmd/replica sync --config config/config.yaml`
+- `go run ./cmd/replica sync --config config/config.yaml --parent-ids <id1>,<id2>`
+- `go run ./cmd/replica sync --config config/config.yaml --parent-id <id>`
 - `go run ./cmd/replica digest --config config/config.yaml --date 2026-04-07`
 - `go run ./cmd/api --config config/config.yaml`
 - `go run ./cmd/mcp --config config/config.yaml`

@@ -36,3 +36,36 @@ func TestBuildChangeExcerptBodyRawFallback(t *testing.T) {
 		t.Fatalf("expected raw before/after excerpts")
 	}
 }
+
+func TestApplyScopePartialSuppressesDeleted(t *testing.T) {
+	events := []diff.Event{
+		{PageID: "1", Type: diff.ChangeCreated},
+		{PageID: "2", Type: diff.ChangeDeleted},
+		{PageID: "3", Type: diff.ChangeUpdated},
+	}
+	filtered, suppressed := applyScope(events, ScopeModePartial)
+	if suppressed != 1 {
+		t.Fatalf("expected one suppressed delete, got %d", suppressed)
+	}
+	if len(filtered) != 2 {
+		t.Fatalf("expected 2 events after partial scope filtering, got %d", len(filtered))
+	}
+	for _, ev := range filtered {
+		if ev.Type == diff.ChangeDeleted {
+			t.Fatalf("deleted event should not survive in partial mode")
+		}
+	}
+}
+
+func TestApplyScopeFullKeepsDeleted(t *testing.T) {
+	events := []diff.Event{
+		{PageID: "1", Type: diff.ChangeDeleted},
+	}
+	filtered, suppressed := applyScope(events, ScopeModeFull)
+	if suppressed != 0 {
+		t.Fatalf("expected no suppression in full mode, got %d", suppressed)
+	}
+	if len(filtered) != 1 || filtered[0].Type != diff.ChangeDeleted {
+		t.Fatalf("expected deleted event to remain in full mode")
+	}
+}

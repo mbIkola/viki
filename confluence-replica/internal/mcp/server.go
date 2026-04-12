@@ -174,12 +174,12 @@ type getTreeOutput struct {
 
 func NewServer(backend Backend) *Server {
 	s := &Server{
-		backend: backend,
-		sdk: sdk.NewServer(&sdk.Implementation{
-			Name:    "confluence-replica-mcp",
-			Version: "0.2.0",
-		}, nil),
-	}
+			backend: backend,
+			sdk: sdk.NewServer(&sdk.Implementation{
+				Name:    "confluence-replica-mcp",
+				Version: "0.3.0",
+			}, nil),
+		}
 	s.registerTools()
 	s.registerResources()
 	s.registerPrompts()

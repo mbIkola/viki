@@ -23,10 +23,10 @@ type Config struct {
 		DSN string `yaml:"dsn"`
 	} `yaml:"database"`
 	Confluence struct {
-		BaseURL         string `yaml:"base_url"`
-		Token           string `yaml:"token"`
-		RequestSec      int    `yaml:"request_timeout_seconds"`
-		DefaultParentID string `yaml:"default_parent_id"`
+		BaseURL    string   `yaml:"base_url"`
+		Token      string   `yaml:"token"`
+		RequestSec int      `yaml:"request_timeout_seconds"`
+		ParentIDs  []string `yaml:"parent_ids"`
 	} `yaml:"confluence"`
 	API struct {
 		Addr string `yaml:"addr"`
@@ -53,10 +53,15 @@ type Runtime struct {
 
 type LoadOptions struct {
 	RequireConfluenceToken bool
+	RequireParentIDs       bool
+	ParentIDsOverride      []string
 }
 
 func LoadConfig(path string) (Config, error) {
-	return LoadConfigWithOptions(path, LoadOptions{RequireConfluenceToken: true})
+	return LoadConfigWithOptions(path, LoadOptions{
+		RequireConfluenceToken: true,
+		RequireParentIDs:       true,
+	})
 }
 
 func LoadConfigWithOptions(path string, opts LoadOptions) (Config, error) {
@@ -85,6 +90,13 @@ func LoadConfigWithOptions(path string, opts LoadOptions) (Config, error) {
 	}
 	if cfg.Confluence.RequestSec <= 0 {
 		cfg.Confluence.RequestSec = 30
+	}
+	cfg.Confluence.ParentIDs = normalizeParentIDs(cfg.Confluence.ParentIDs)
+	if opts.RequireParentIDs {
+		overrideParentIDs := normalizeParentIDs(opts.ParentIDsOverride)
+		if len(cfg.Confluence.ParentIDs) == 0 && len(overrideParentIDs) == 0 {
+			return Config{}, fmt.Errorf("confluence.parent_ids is required unless parent override is provided")
+		}
 	}
 	if cfg.API.Addr == "" {
 		cfg.API.Addr = ":8080"
@@ -158,4 +170,21 @@ func sanitizeDSN(dsn string) string {
 		}
 	}
 	return u.String()
+}
+
+func normalizeParentIDs(ids []string) []string {
+	out := make([]string, 0, len(ids))
+	seen := make(map[string]struct{}, len(ids))
+	for _, raw := range ids {
+		id := strings.TrimSpace(raw)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	return out
 }

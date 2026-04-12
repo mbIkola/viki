@@ -62,6 +62,11 @@ flowchart LR
   - `make build` / `make build-mcp`;
   - `make mcp-smoke`.
 
+- Sync roots теперь задаются только через `confluence.parent_ids`:
+  - это явный список root pages для авто-синхронизации;
+  - `make sync`/`bootstrap` без override берут именно этот список (full scope);
+  - ручной override root-ов (`--parent-id`/`--parent-ids`) работает как partial scope и не создает ложные `deleted` для других корней.
+
 ## Dependencies
 
 ### Runtime dependencies
@@ -79,6 +84,7 @@ flowchart LR
 - Для ingest из Confluence:
   - Confluence URL
   - PAT/token через Keychain reference (`keychain://codex_confluence_pat`)
+  - `confluence.parent_ids` (обязательный список root pages для sync/bootstrap)
 - Для semantic embeddings:
   - Ollama endpoint + embedding model
 

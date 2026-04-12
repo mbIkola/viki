@@ -8,12 +8,15 @@ POSTGRES_DB ?= confluence_replica
 POSTGRES_USER ?= postgres
 BIN_DIR ?= bin
 PARENT_ID ?=
+PARENT_IDS ?=
 DATE ?= $(shell date +%F)
+KEYCHAIN_SERVICE ?= codex_confluence_pat
+KEYCHAIN_ACCOUNT ?=
 
 .PHONY: help env-init data-dir runtime-up runtime-up-no-ollama runtime-down \
 	postgres-up postgres-down postgres-restart postgres-ps postgres-logs \
 	db-migrate db-vector-check db-shell api bootstrap sync digest test \
-	build build-api build-replica build-mcp mcp mcp-smoke
+	build build-api build-replica build-mcp mcp mcp-smoke update-token update
 
 help:
 	@echo "Common targets:"
@@ -31,8 +34,10 @@ help:
 	@echo "  make api                 # Run API service"
 	@echo "  make mcp                 # Run MCP stdio server"
 	@echo "  make mcp-smoke           # MCP handshake + tools/resources/prompts smoke test"
-	@echo "  make bootstrap PARENT_ID=<id>"
-	@echo "  make sync PARENT_ID=<id>"
+	@echo "  make update-token        # Interactively update Confluence PAT in macOS Keychain"
+	@echo "  make bootstrap [PARENT_ID=<id>] [PARENT_IDS=a,b]  # if empty, uses config confluence.parent_ids"
+	@echo "  make sync [PARENT_ID=<id>] [PARENT_IDS=a,b]       # if empty, uses config confluence.parent_ids"
+	@echo "  make update [PARENT_ID=<id>] [PARENT_IDS=a,b]     # alias for sync"
 	@echo "  make digest [DATE=YYYY-MM-DD]"
 	@echo "  make test                # Run go test ./..."
 
@@ -107,15 +112,50 @@ build-mcp:
 	@echo "built $(BIN_DIR)/mcp"
 
 bootstrap:
-	@if [[ -z "$(PARENT_ID)" ]]; then echo "PARENT_ID is required"; exit 1; fi
-	@go run ./cmd/replica bootstrap --config "$(CONFIG)" --parent-id "$(PARENT_ID)"
+	@if [[ -n "$(PARENT_IDS)" || -n "$(PARENT_ID)" ]]; then \
+		args=""; \
+		if [[ -n "$(PARENT_IDS)" ]]; then args="$$args --parent-ids \"$(PARENT_IDS)\""; fi; \
+		if [[ -n "$(PARENT_ID)" ]]; then args="$$args --parent-id \"$(PARENT_ID)\""; fi; \
+		eval "go run ./cmd/replica bootstrap --config \"$(CONFIG)\" $$args"; \
+	else \
+		go run ./cmd/replica bootstrap --config "$(CONFIG)"; \
+	fi
 
 sync:
-	@if [[ -z "$(PARENT_ID)" ]]; then echo "PARENT_ID is required"; exit 1; fi
-	@go run ./cmd/replica sync --config "$(CONFIG)" --parent-id "$(PARENT_ID)"
+	@if [[ -n "$(PARENT_IDS)" || -n "$(PARENT_ID)" ]]; then \
+		args=""; \
+		if [[ -n "$(PARENT_IDS)" ]]; then args="$$args --parent-ids \"$(PARENT_IDS)\""; fi; \
+		if [[ -n "$(PARENT_ID)" ]]; then args="$$args --parent-id \"$(PARENT_ID)\""; fi; \
+		eval "go run ./cmd/replica sync --config \"$(CONFIG)\" $$args"; \
+	else \
+		go run ./cmd/replica sync --config "$(CONFIG)"; \
+	fi
+
+update: sync
 
 digest:
 	@go run ./cmd/replica digest --config "$(CONFIG)" --date "$(DATE)"
 
 test:
 	@go test ./...
+
+update-token:
+	@service="$(KEYCHAIN_SERVICE)"; \
+	account="$(KEYCHAIN_ACCOUNT)"; \
+	default_account="$$(whoami)"; \
+	if [[ -z "$$service" ]]; then \
+		echo "KEYCHAIN_SERVICE is required"; \
+		exit 1; \
+	fi; \
+	if [[ -z "$$account" ]]; then \
+		read -r -p "Keychain account [$$default_account]: " input_account; \
+		account="$${input_account:-$$default_account}"; \
+	fi; \
+	read -r -s -p "Enter new Confluence PAT: " token; \
+	echo; \
+	if [[ -z "$$token" ]]; then \
+		echo "PAT cannot be empty"; \
+		exit 1; \
+	fi; \
+	security add-generic-password -U -s "$$service" -a "$$account" -w "$$token"; \
+	echo "Token updated: keychain://$$service?account=$$account"

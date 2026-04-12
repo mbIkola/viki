@@ -8,9 +8,11 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"confluence-replica/internal/app"
+	"confluence-replica/internal/ingest"
 	"confluence-replica/internal/logx"
 )
 
@@ -28,8 +30,9 @@ type chatRequest struct {
 }
 
 type jobRequest struct {
-	ParentID string `json:"parent_id"`
-	Date     string `json:"date"`
+	ParentID  string   `json:"parent_id"`
+	ParentIDs []string `json:"parent_ids"`
+	Date      string   `json:"date"`
 }
 
 func main() {
@@ -132,24 +135,25 @@ func (s *server) handleJobSync(w http.ResponseWriter, r *http.Request) {
 func (s *server) runSyncJob(w http.ResponseWriter, r *http.Request, bootstrap bool) {
 	var req jobRequest
 	_ = json.NewDecoder(r.Body).Decode(&req)
-	if req.ParentID == "" {
-		req.ParentID = s.rt.Config.Confluence.DefaultParentID
-	}
-	if req.ParentID == "" {
-		writeErr(w, http.StatusBadRequest, errors.New("parent_id is required"))
+	parentIDs, scopeMode, err := resolveJobParentIDs(s.rt.Config.Confluence.ParentIDs, req)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	var err error
 	if bootstrap {
-		err = s.rt.Ingest.Bootstrap(r.Context(), req.ParentID)
+		err = s.rt.Ingest.Bootstrap(r.Context(), parentIDs, scopeMode)
 	} else {
-		err = s.rt.Ingest.Sync(r.Context(), req.ParentID)
+		err = s.rt.Ingest.Sync(r.Context(), parentIDs, scopeMode)
 	}
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	writeJSON(w, http.StatusAccepted, map[string]any{"status": "ok"})
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"status":     "ok",
+		"scope_mode": scopeMode,
+		"parent_ids": parentIDs,
+	})
 }
 
 func (s *server) handleJobDigest(w http.ResponseWriter, r *http.Request) {
@@ -192,4 +196,33 @@ func lastSegment(p string) string {
 		}
 	}
 	return p
+}
+
+func resolveJobParentIDs(configParentIDs []string, req jobRequest) ([]string, string, error) {
+	override := normalizeIDs(append(req.ParentIDs, req.ParentID))
+	if len(override) > 0 {
+		return override, ingest.ScopeModePartial, nil
+	}
+	cfg := normalizeIDs(configParentIDs)
+	if len(cfg) == 0 {
+		return nil, "", errors.New("confluence.parent_ids is required in config or provide parent_ids/parent_id in request")
+	}
+	return cfg, ingest.ScopeModeFull, nil
+}
+
+func normalizeIDs(ids []string) []string {
+	out := make([]string, 0, len(ids))
+	seen := make(map[string]struct{}, len(ids))
+	for _, raw := range ids {
+		id := strings.TrimSpace(raw)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	return out
 }

@@ -2,14 +2,21 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	"confluence-replica/internal/app"
 	"confluence-replica/internal/logx"
+)
+
+const (
+	scopeModeFull    = "full"
+	scopeModePartial = "partial"
 )
 
 func main() {
@@ -32,12 +39,18 @@ func runSyncLike(mode string) {
 	fs := flag.NewFlagSet(mode, flag.ExitOnError)
 	configPath := fs.String("config", "config/config.yaml", "path to config yaml")
 	parentID := fs.String("parent-id", "", "confluence parent page id")
+	parentIDsCSV := fs.String("parent-ids", "", "comma-separated confluence parent page ids")
 	quiet := fs.Bool("quiet", false, "set log level to ERROR")
 	verbose := fs.Bool("verbose", false, "set log level to DEBUG")
 	_ = fs.Parse(os.Args[2:])
 
 	ctx := context.Background()
-	cfg, err := app.LoadConfig(*configPath)
+	overrideParentIDs := collectParentOverrides(*parentID, *parentIDsCSV)
+	cfg, err := app.LoadConfigWithOptions(*configPath, app.LoadOptions{
+		RequireConfluenceToken: true,
+		RequireParentIDs:       true,
+		ParentIDsOverride:      overrideParentIDs,
+	})
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -45,13 +58,11 @@ func runSyncLike(mode string) {
 		log.Fatal(err)
 	}
 	logx.Infof("[replica] command=%s config=%s", mode, *configPath)
-	if *parentID == "" {
-		*parentID = cfg.Confluence.DefaultParentID
+	parentIDs, scopeMode, err := resolveParentIDs(cfg.Confluence.ParentIDs, overrideParentIDs)
+	if err != nil {
+		log.Fatal(err)
 	}
-	if *parentID == "" {
-		log.Fatal("parent-id is required")
-	}
-	logx.Infof("[replica] import_params mode=%s parent_id=%s confluence_url=%s", mode, *parentID, cfg.Confluence.BaseURL)
+	logx.Infof("[replica] import_params mode=%s scope_mode=%s parent_ids=%v confluence_url=%s", mode, scopeMode, parentIDs, cfg.Confluence.BaseURL)
 
 	rt, err := app.NewRuntime(ctx, cfg)
 	if err != nil {
@@ -60,14 +71,14 @@ func runSyncLike(mode string) {
 	defer rt.Close()
 
 	if mode == "bootstrap" {
-		err = rt.Ingest.Bootstrap(ctx, *parentID)
+		err = rt.Ingest.Bootstrap(ctx, parentIDs, scopeMode)
 	} else {
-		err = rt.Ingest.Sync(ctx, *parentID)
+		err = rt.Ingest.Sync(ctx, parentIDs, scopeMode)
 	}
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Printf("%s completed for parent %s\n", mode, *parentID)
+	fmt.Printf("%s completed for %d parent roots (%s)\n", mode, len(parentIDs), scopeMode)
 }
 
 func runDigest() {
@@ -83,7 +94,10 @@ func runDigest() {
 		log.Fatal(err)
 	}
 	ctx := context.Background()
-	cfg, err := app.LoadConfig(*configPath)
+	cfg, err := app.LoadConfigWithOptions(*configPath, app.LoadOptions{
+		RequireConfluenceToken: true,
+		RequireParentIDs:       false,
+	})
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -102,4 +116,54 @@ func runDigest() {
 		log.Fatal(err)
 	}
 	fmt.Println(md)
+}
+
+func collectParentOverrides(parentID, parentIDsCSV string) []string {
+	out := make([]string, 0)
+	out = append(out, splitParentIDsCSV(parentIDsCSV)...)
+	if id := strings.TrimSpace(parentID); id != "" {
+		out = append(out, id)
+	}
+	return normalizeIDs(out)
+}
+
+func splitParentIDsCSV(raw string) []string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		out = append(out, strings.TrimSpace(p))
+	}
+	return out
+}
+
+func resolveParentIDs(configParentIDs, overrideParentIDs []string) ([]string, string, error) {
+	override := normalizeIDs(overrideParentIDs)
+	if len(override) > 0 {
+		return override, scopeModePartial, nil
+	}
+	cfg := normalizeIDs(configParentIDs)
+	if len(cfg) == 0 {
+		return nil, "", errors.New("confluence.parent_ids is required when no --parent-id/--parent-ids override is provided")
+	}
+	return cfg, scopeModeFull, nil
+}
+
+func normalizeIDs(ids []string) []string {
+	out := make([]string, 0, len(ids))
+	seen := make(map[string]struct{}, len(ids))
+	for _, raw := range ids {
+		id := strings.TrimSpace(raw)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	return out
 }

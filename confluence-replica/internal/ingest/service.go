@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -24,20 +25,32 @@ type Embedder interface {
 	Embed(ctx context.Context, text string) ([]float32, error)
 }
 
+const (
+	ScopeModeFull    = "full"
+	ScopeModePartial = "partial"
+)
+
 func NewService(client *confluence.Client, st store.Store, emb Embedder) *Service {
 	return &Service{client: client, store: st, emb: emb}
 }
 
-func (s *Service) Bootstrap(ctx context.Context, parentID string) error {
-	return s.syncInternal(ctx, parentID, "bootstrap")
+func (s *Service) Bootstrap(ctx context.Context, parentIDs []string, scopeMode string) error {
+	return s.syncInternal(ctx, parentIDs, "bootstrap", scopeMode)
 }
 
-func (s *Service) Sync(ctx context.Context, parentID string) error {
-	return s.syncInternal(ctx, parentID, "sync")
+func (s *Service) Sync(ctx context.Context, parentIDs []string, scopeMode string) error {
+	return s.syncInternal(ctx, parentIDs, "sync", scopeMode)
 }
 
-func (s *Service) syncInternal(ctx context.Context, parentID, mode string) error {
-	logx.Infof("[ingest] sync_start mode=%s parent_id=%s", mode, parentID)
+func (s *Service) syncInternal(ctx context.Context, parentIDs []string, mode, scopeMode string) error {
+	parentIDs = normalizeIDs(parentIDs)
+	if len(parentIDs) == 0 {
+		return fmt.Errorf("at least one parent_id is required")
+	}
+	if scopeMode != ScopeModeFull && scopeMode != ScopeModePartial {
+		return fmt.Errorf("invalid scope mode %q", scopeMode)
+	}
+	logx.Infof("[ingest] sync_start mode=%s scope_mode=%s parent_ids=%v", mode, scopeMode, parentIDs)
 	runID, err := s.store.BeginSyncRun(ctx, mode)
 	if err != nil {
 		return err
@@ -51,27 +64,47 @@ func (s *Service) syncInternal(ctx context.Context, parentID, mode string) error
 	}
 	logx.Infof("[ingest] snapshot_before pages=%d", len(before))
 
-	pages, err := s.client.WalkTree(ctx, parentID)
-	if err != nil {
-		_ = s.store.FinishSyncRun(ctx, runID, "failed", map[string]any{"error": err.Error()})
-		return err
+	rawFetched := 0
+	pageByID := make(map[string]confluence.Page, 1024)
+	for _, rootID := range parentIDs {
+		pages, walkErr := s.client.WalkTree(ctx, rootID)
+		if walkErr != nil {
+			_ = s.store.FinishSyncRun(ctx, runID, "failed", map[string]any{
+				"error":      walkErr.Error(),
+				"parent_ids": parentIDs,
+				"scope_mode": scopeMode,
+			})
+			return walkErr
+		}
+		rawFetched += len(pages)
+		for _, p := range pages {
+			existing, ok := pageByID[p.ID]
+			if !ok || p.Version.Number >= existing.Version.Number {
+				pageByID[p.ID] = p
+			}
+		}
 	}
-	logx.Infof("[ingest] fetched_pages pages=%d", len(pages))
+	pages := make([]confluence.Page, 0, len(pageByID))
+	for _, p := range pageByID {
+		pages = append(pages, p)
+	}
+	sort.Slice(pages, func(i, j int) bool { return pages[i].ID < pages[j].ID })
+	logx.Infof("[ingest] fetched_pages raw=%d unique=%d", rawFetched, len(pages))
 
 	after := make([]diff.PageState, 0, len(pages))
 	for idx, p := range pages {
 		bodyNorm := diff.NormalizeText(stripHTML(p.Body.Storage.Value))
 		bodyHash := diff.HashNormalizedText(bodyNorm)
-		parentID := ""
+		pageParentID := ""
 		if len(p.Ancestors) > 0 {
-			parentID = p.Ancestors[len(p.Ancestors)-1].ID
+			pageParentID = p.Ancestors[len(p.Ancestors)-1].ID
 		}
 
 		up := store.Page{
 			PageID:       p.ID,
 			SpaceKey:     p.Space.Key,
 			Title:        p.Title,
-			ParentPageID: parentID,
+			ParentPageID: pageParentID,
 			CurrentVer:   p.Version.Number,
 			UpdatedAt:    parseConfluenceTime(p.Version.When),
 			CreatedAt:    p.CreatedAt,
@@ -87,7 +120,7 @@ func (s *Service) syncInternal(ctx context.Context, parentID, mode string) error
 			BodyNorm:   bodyNorm,
 			BodyHash:   bodyHash,
 			Title:      p.Title,
-			ParentPage: parentID,
+			ParentPage: pageParentID,
 			FetchedAt:  time.Now().UTC(),
 		}
 		chunks := toChunks(p.ID, p.Version.Number, stripHTML(p.Body.Storage.Value))
@@ -95,21 +128,22 @@ func (s *Service) syncInternal(ctx context.Context, parentID, mode string) error
 			_ = s.store.FinishSyncRun(ctx, runID, "failed", map[string]any{"error": err.Error()})
 			return err
 		}
-		logx.Debugf("[ingest] page_prepare index=%d/%d page_id=%s version=%d chunks=%d parent_id=%s", idx+1, len(pages), p.ID, p.Version.Number, len(chunks), parentID)
+		logx.Debugf("[ingest] page_prepare index=%d/%d page_id=%s version=%d chunks=%d parent_id=%s", idx+1, len(pages), p.ID, p.Version.Number, len(chunks), pageParentID)
 
 		if err := s.store.UpsertPageWithVersion(ctx, up, v, chunks); err != nil {
 			_ = s.store.FinishSyncRun(ctx, runID, "failed", map[string]any{"error": err.Error()})
 			return err
 		}
 		logx.Debugf("[ingest] page_saved page_id=%s version=%d", p.ID, p.Version.Number)
-		after = append(after, diff.PageState{PageID: p.ID, Title: p.Title, ParentPageID: parentID, Version: p.Version.Number, BodyNormHash: bodyHash, Exists: true})
+		after = append(after, diff.PageState{PageID: p.ID, Title: p.Title, ParentPageID: pageParentID, Version: p.Version.Number, BodyNormHash: bodyHash, Exists: true})
 	}
 
 	beforeStates := make([]diff.PageState, 0, len(before))
 	for _, b := range before {
 		beforeStates = append(beforeStates, diff.PageState{PageID: b.PageID, Title: b.Title, ParentPageID: b.ParentPageID, Version: b.Version, BodyNormHash: b.BodyNormHash, Exists: true})
 	}
-	events := diff.DetectChanges(beforeStates, after)
+	rawEvents := diff.DetectChanges(beforeStates, after)
+	events, deletedSuppressed := applyScope(rawEvents, scopeMode)
 	persisted := make([]store.ChangeEvent, 0, len(events))
 	for _, e := range events {
 		persisted = append(persisted, store.ChangeEvent{
@@ -140,10 +174,17 @@ func (s *Service) syncInternal(ctx context.Context, parentID, mode string) error
 	}
 	logx.Infof("[ingest] changes_detected total=%d", len(events))
 
-	if err := s.store.FinishSyncRun(ctx, runID, "success", map[string]any{"pages_scanned": len(pages), "events": len(events)}); err != nil {
+	if err := s.store.FinishSyncRun(ctx, runID, "success", map[string]any{
+		"pages_scanned":      len(pages),
+		"events":             len(events),
+		"events_raw":         len(rawEvents),
+		"deleted_suppressed": deletedSuppressed,
+		"scope_mode":         scopeMode,
+		"parent_ids":         parentIDs,
+	}); err != nil {
 		return err
 	}
-	logx.Infof("[ingest] sync_done mode=%s run_id=%d pages=%d events=%d", mode, runID, len(pages), len(events))
+	logx.Infof("[ingest] sync_done mode=%s scope_mode=%s run_id=%d pages=%d events=%d", mode, scopeMode, runID, len(pages), len(events))
 	return nil
 }
 
@@ -389,4 +430,37 @@ func excerptWindow(runes []rune, pos int, span int) string {
 		}
 	}
 	return strings.TrimSpace(string(runes[start:end]))
+}
+
+func normalizeIDs(ids []string) []string {
+	out := make([]string, 0, len(ids))
+	seen := make(map[string]struct{}, len(ids))
+	for _, raw := range ids {
+		id := strings.TrimSpace(raw)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	return out
+}
+
+func applyScope(events []diff.Event, scopeMode string) ([]diff.Event, int) {
+	if scopeMode != ScopeModePartial {
+		return events, 0
+	}
+	filtered := make([]diff.Event, 0, len(events))
+	suppressed := 0
+	for _, e := range events {
+		if e.Type == diff.ChangeDeleted {
+			suppressed++
+			continue
+		}
+		filtered = append(filtered, e)
+	}
+	return filtered, suppressed
 }

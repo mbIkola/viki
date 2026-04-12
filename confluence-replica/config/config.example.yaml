@@ -5,7 +5,8 @@ confluence:
   base_url: "https://gbuconfluence.oraclecorp.com"
   token: "keychain://codex_confluence_pat"
   request_timeout_seconds: 30
-  default_parent_id: ""
+  parent_ids:
+    - "925576634"
 
 api:
   addr: ":8080"
