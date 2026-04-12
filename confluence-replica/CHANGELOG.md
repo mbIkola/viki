@@ -14,7 +14,7 @@ using namespaced monorepo tags: `confluence-replica/vX.Y.Z`.
 
 ### Changed
 
-- _No notable changes yet._
+- Breaking: replaced the local Postgres/pgvector runtime with a SQLite-only runtime built on FTS5 and `sqlite-vec`, changed config from `database.dsn` to `database.path`, and made rebuild-from-Confluence the supported reindex/migration path. ([#3](https://github.com/mbIkola/viki/pull/3))
 
 ### Fixed
 
