@@ -12,6 +12,10 @@ PARENT_IDS ?=
 DATE ?= $(shell date +%F)
 KEYCHAIN_SERVICE ?= codex_confluence_pat
 KEYCHAIN_ACCOUNT ?=
+VERSION ?= $(shell git describe --tags --match 'confluence-replica/v*' --abbrev=0 2>/dev/null || echo dev)
+COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
+BUILD_DATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+LDFLAGS ?= -X confluence-replica/internal/version.Version=$(VERSION) -X confluence-replica/internal/version.Commit=$(COMMIT) -X confluence-replica/internal/version.BuildDate=$(BUILD_DATE)
 
 .PHONY: help env-init data-dir runtime-up runtime-up-no-ollama runtime-down \
 	postgres-up postgres-down postgres-restart postgres-ps postgres-logs \
@@ -98,17 +102,17 @@ build: build-api build-replica build-mcp
 
 build-api:
 	@mkdir -p "$(BIN_DIR)"
-	@go build -o "$(BIN_DIR)/api" ./cmd/api
+	@go build -ldflags "$(LDFLAGS)" -o "$(BIN_DIR)/api" ./cmd/api
 	@echo "built $(BIN_DIR)/api"
 
 build-replica:
 	@mkdir -p "$(BIN_DIR)"
-	@go build -o "$(BIN_DIR)/replica" ./cmd/replica
+	@go build -ldflags "$(LDFLAGS)" -o "$(BIN_DIR)/replica" ./cmd/replica
 	@echo "built $(BIN_DIR)/replica"
 
 build-mcp:
 	@mkdir -p "$(BIN_DIR)"
-	@go build -o "$(BIN_DIR)/mcp" ./cmd/mcp
+	@go build -ldflags "$(LDFLAGS)" -o "$(BIN_DIR)/mcp" ./cmd/mcp
 	@echo "built $(BIN_DIR)/mcp"
 
 bootstrap:
