@@ -60,7 +60,7 @@ flowchart LR
   - `make runtime-up-no-ollama` (если Ollama уже живет отдельно);
   - `make db-migrate`;
   - `make build` / `make build-mcp`;
-  - `make mcp-integration` (или `make mcp-smoke` как alias).
+  - `make mcp-integration`.
 
 - Sync roots теперь задаются только через `confluence.parent_ids`:
   - это явный список root pages для авто-синхронизации;

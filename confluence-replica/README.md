@@ -145,7 +145,6 @@ After connecting, verify in the client that MCP exposes:
 Local smoke without any AI client:
 
 - `make mcp-integration`
-- `make mcp-smoke` (alias)
 
 Directly:
 

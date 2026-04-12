@@ -4,7 +4,6 @@ package integration
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -62,7 +61,7 @@ func probeMCPBinarySmoke(binaryPath, configPath string) (mcpSmokeResult, error) 
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, binaryPath, "--quiet", "--config", configPath)
-	var stderr bytes.Buffer
+	var stderr stderrBuffer
 	cmd.Stderr = &stderr
 
 	stdin, err := cmd.StdinPipe()
