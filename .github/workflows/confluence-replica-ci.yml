@@ -1,0 +1,38 @@
+name: confluence-replica-ci
+
+on:
+  push:
+    paths:
+      - "confluence-replica/**"
+      - "confluence-replica/CHANGELOG.md"
+      - ".agents/skills/versioning.md"
+      - "AGENTS.md"
+      - ".github/workflows/confluence-replica-ci.yml"
+      - ".github/workflows/confluence-replica-release.yml"
+  pull_request:
+    paths:
+      - "confluence-replica/**"
+      - "confluence-replica/CHANGELOG.md"
+      - ".agents/skills/versioning.md"
+      - "AGENTS.md"
+      - ".github/workflows/confluence-replica-ci.yml"
+      - ".github/workflows/confluence-replica-release.yml"
+
+jobs:
+  test-and-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: confluence-replica/go.mod
+
+      - name: Validate changelog structure
+        run: python3 confluence-replica/scripts/changelog_release.py --file confluence-replica/CHANGELOG.md check
+
+      - name: Run tests
+        working-directory: confluence-replica
+        run: go test ./...

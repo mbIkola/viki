@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"confluence-replica/internal/version"
+
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -174,12 +176,12 @@ type getTreeOutput struct {
 
 func NewServer(backend Backend) *Server {
 	s := &Server{
-			backend: backend,
-			sdk: sdk.NewServer(&sdk.Implementation{
-				Name:    "confluence-replica-mcp",
-				Version: "0.3.0",
-			}, nil),
-		}
+		backend: backend,
+		sdk: sdk.NewServer(&sdk.Implementation{
+			Name:    "confluence-replica-mcp",
+			Version: version.MCPVersion(),
+		}, nil),
+	}
 	s.registerTools()
 	s.registerResources()
 	s.registerPrompts()
