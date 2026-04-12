@@ -13,6 +13,14 @@ func (f fakeRetriever) Retrieve(_ context.Context, _ string, _ int) ([]SearchHit
 	}, nil
 }
 
+type reciprocalRankRetriever struct{}
+
+func (r reciprocalRankRetriever) Retrieve(_ context.Context, _ string, _ int) ([]SearchHit, error) {
+	return []SearchHit{
+		{PageID: "42", Version: 7, Title: "Runbook", Snippet: "critical path", Score: 1.0 / 61.0},
+	}, nil
+}
+
 type fakeLLM struct{}
 
 func (f fakeLLM) Complete(_ context.Context, _ string, _ []SearchHit) (string, error) {
@@ -30,6 +38,17 @@ func TestChatResponseContainsCitations(t *testing.T) {
 	}
 	if resp.Citations[0].PageID == "" || resp.Citations[0].Version == 0 {
 		t.Fatalf("expected citation with page_id and version")
+	}
+}
+
+func TestChatAcceptsTopFusionHitAsSufficientContext(t *testing.T) {
+	engine := NewEngine(reciprocalRankRetriever{}, fakeLLM{})
+	resp, err := engine.Answer(context.Background(), "what changed?")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Refused {
+		t.Fatalf("expected top fusion hit to be accepted as context")
 	}
 }
 

@@ -36,7 +36,7 @@ func (r runtimeBackend) Search(ctx context.Context, query string, limit int, inc
 			Version:  h.Version,
 			Title:    h.Title,
 			Snippet:  snippet,
-			Score:    h.FinalScore,
+			Score:    h.FusionScore,
 			PageURI:  fmt.Sprintf("confluence://page/%s", h.PageID),
 			ChunkURI: chunkURI(h.ChunkID),
 		})

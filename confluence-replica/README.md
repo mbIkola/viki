@@ -1,91 +1,205 @@
 # confluence-replica
 
-Local memory for Confluence.  
-Fast retrieval, deterministic citations, and offline survivability when the network behaves like a liar.
+Local memory for Confluence, backed by a single SQLite database file.
 
-## High-level idea
+`confluence-replica` keeps ingest, diff, digest, search, and RAG on a local index first. The local runtime is intentionally simple:
 
-Most knowledge systems fail in the same way:
+- one SQLite file at `database.path`
+- `FTS5` for lexical ranking and native `snippet()` output
+- `sqlite-vec` `vec0` for semantic KNN search
+- Reciprocal Rank Fusion in Go over top lexical and vector candidates
 
-- they depend on a live upstream API
-- they get slow under pressure
-- they pretend confidence when context is thin
-
-`confluence-replica` does the opposite. It pulls Confluence content into a local Postgres + pgvector index, then serves agents from local truth first.
-
-Design intent:
-
-- keep the ingestion/sync runtime internal
-- expose a small, stable MCP facade for agents
-- make retrieval fast, inspectable, and debuggable
-- stay useful offline as long as local index exists
-
-You do not need to mirror every internal endpoint into MCP.  
-Agents need focused retrieval primitives, not another sprawling API to hallucinate over.
+No Postgres. No pgvector. No Docker in the happy path.
 
 ## Architecture
 
-- Internal system:
-  - Go services for ingest, diff, digest, search, and RAG orchestration
-  - HTTP API (`cmd/api`) for internal service integration and ops workflows
+- Internal runtime:
+  - Go services for bootstrap, sync, diff, digest, search, and deterministic RAG
+  - HTTP API in `cmd/api` for internal service and ops flows
 - Agent facade:
-  - MCP server (`cmd/mcp`) over stdio
-  - retrieval-only surface for indexed knowledge access
+  - MCP server in `cmd/mcp` over stdio
+  - retrieval-only surface for indexed knowledge
 
-Non-goal: expose `bootstrap/sync/digest jobs` through MCP.
+Search behavior:
 
-## MCP v1 contract
+- lexical search stays inside SQLite with `MATCH`, `ORDER BY rank`, and `snippet()`
+- semantic search stays inside SQLite `vec0` with cosine distance
+- fusion is simple `1 / (60 + rank)` rank fusion in Go over top `50` lexical hits plus top `50` vector hits
 
-### Binary
+## Local Runtime Contract
 
-- `go run ./cmd/mcp --config config/config.yaml`
-- MCP server implementation uses official SDK: `github.com/modelcontextprotocol/go-sdk`
+The SQLite runtime is the only supported local runtime.
 
-### Resources
+- `database.path` replaces `database.dsn`
+- the parent directory and database file are created automatically on first start
+- schema bootstrap happens at startup from a single embedded schema
+- incompatible index changes are handled by rebuild, not migrations
+
+`replica_meta` stores the active index profile:
+
+- `schema_version`
+- `embedding_provider`
+- `embedding_model`
+- `embedding_dimension`
+- `chunking_version`
+- `embedding_normalization`
+
+Startup validates this profile exactly. If it changes, startup fails fast with `reindex required`.
+
+## Prerequisites
+
+- Go `1.25+`
+- `gcc` and `CGO_ENABLED=1`
+- SQLite build tag `sqlite_fts5`
+- optional Ollama if you want semantic embeddings locally
+
+The project uses:
+
+- `github.com/mattn/go-sqlite3`
+- `github.com/asg017/sqlite-vec-go-bindings/cgo`
+
+Treat that CGO toolchain as part of the product contract. Trading Docker drama for hidden compiler drama would be a rather silly bargain.
+
+## Config
+
+Start from the example:
+
+```bash
+cp config/config.example.yaml config/config.yaml
+```
+
+Key fields:
+
+- `database.path`
+  - leave empty to use the default: `${HOME}/.local/viki/confluence/replica.db`
+  - or set an absolute SQLite path explicitly
+- `confluence.parent_ids`
+  - source of truth for full bootstrap and sync scope
+- `embeddings.*`
+  - configure Ollama or set `provider: "noop"` to disable semantic embeddings
+
+Optional `.env` overrides can be copied from `.env.example`.
+
+## Quickstart
+
+```bash
+cp .env.example .env
+cp config/config.example.yaml config/config.yaml
+make test
+make build
+make bootstrap
+```
+
+Useful commands:
+
+- `make bootstrap`
+- `make sync`
+- `make rebuild`
+- `make digest DATE=2026-04-07`
+- `make api`
+- `make mcp`
+- `make mcp-integration`
+
+All `make` targets already use `CGO_ENABLED=1` and `-tags "sqlite_fts5"`.
+
+## Rebuild Workflow
+
+`rebuild` is the canonical reset, reindex, and repair path.
+
+```bash
+make rebuild
+make rebuild PARENT_ID=925576634
+make rebuild PARENT_IDS=925576634,776923811
+```
+
+Under the hood, `replica rebuild`:
+
+- deletes `database.path`
+- deletes sibling `-wal` and `-shm` files if present
+- bootstraps a fresh schema
+- writes a fresh `replica_meta`
+- repulls the configured Confluence roots
+
+Cold rebuild from Confluence is the only supported migration and recovery story.
+
+## Direct Commands
+
+If you prefer raw Go commands:
+
+```bash
+CGO_ENABLED=1 go run -tags sqlite_fts5 ./cmd/replica bootstrap --config config/config.yaml
+CGO_ENABLED=1 go run -tags sqlite_fts5 ./cmd/replica sync --config config/config.yaml
+CGO_ENABLED=1 go run -tags sqlite_fts5 ./cmd/replica rebuild --config config/config.yaml
+CGO_ENABLED=1 go run -tags sqlite_fts5 ./cmd/replica digest --config config/config.yaml --date 2026-04-07
+CGO_ENABLED=1 go run -tags sqlite_fts5 ./cmd/api --config config/config.yaml
+CGO_ENABLED=1 go run -tags sqlite_fts5 ./cmd/mcp --config config/config.yaml
+```
+
+Full verification:
+
+```bash
+CGO_ENABLED=1 go test -tags sqlite_fts5 ./...
+CGO_ENABLED=1 go test -tags "integration sqlite_fts5" ./integration -run TestMCPBinarySmoke -count=1
+CGO_ENABLED=1 go build -tags sqlite_fts5 ./cmd/api ./cmd/replica ./cmd/mcp
+```
+
+## Ollama Embeddings
+
+- endpoint default: `http://127.0.0.1:11434`
+- model example: `nomic-embed-text`
+- pull once with `ollama pull nomic-embed-text`
+- environment overrides: `OLLAMA_BASE_URL`, `OLLAMA_EMBED_MODEL`
+
+If embeddings are enabled, startup probes the model once to determine the exact embedding dimension and stores it in `replica_meta`.
+
+## Confluence PAT from Keychain
+
+`config/config.yaml` supports secret refs in `confluence.token`:
+
+- `keychain://codex_confluence_pat`
+- `keychain://codex_confluence_pat?account=oracle-user`
+
+Example:
+
+```bash
+security add-generic-password -U -s codex_confluence_pat -a oracle-user -w "<your_pat_here>"
+```
+
+## MCP v1 Contract
+
+Binary:
+
+- `./bin/mcp`
+- or `CGO_ENABLED=1 go run -tags sqlite_fts5 ./cmd/mcp --config config/config.yaml`
+
+Resources:
 
 - `confluence://page/{page_id}`
 - `confluence://chunk/{chunk_id}`
 - `confluence://digest/{yyyy-mm-dd}`
 
-### Tools
+Tools:
 
 - `search(query, limit=10, include_snippets=true)`
-  - returns ranked hits with `page_id`, `version`, `title`, `snippet`, `score`, and resource URIs
 - `ask(query, top_k=8)`
-  - deterministic synthesis over local retrieved snippets only
-  - returns explicit citations and `refused=true` if context is weak
 - `get_tree(root_page_id, depth=2, limit=200)`
-  - returns local page subtree for context exploration
 - `what_changed(date?, run_id?, parent_id?, limit=50, include_excerpts=true)`
-  - returns structured per-page diffs captured during sync
-  - includes change reasons and diagram metadata flags
 
-### Prompts
+Prompts:
 
 - `daily_brief(date)`
 - `investigate_page(page_id, question)`
 - `compare_versions(page_id, from_version, to_version)`
 
-### Why this shape
+## Add This MCP to Codex or Cline
 
-HTTP API is internal truth for services and operations.  
-MCP is a narrow, stable entrance for agents.
+Build the binary first:
 
-## Add this MCP to Codex and Cline
+```bash
+make build-mcp
+```
 
-### 1) Build the MCP binary
-
-From `confluence-replica` directory:
-
-- `make build-mcp`
-
-This creates:
-
-- `./bin/mcp`
-
-### 2) Codex desktop config
-
-Edit `~/.codex/config.toml` and add:
+Codex desktop example:
 
 ```toml
 [mcp_servers.confluence_replica]
@@ -93,150 +207,23 @@ command = "/Users/${USER}/dev/codex/confluence-replica/bin/mcp"
 args = ["--config", "/Users/${USER}/dev/codex/confluence-replica/config/config.yaml"]
 ```
 
-Then restart Codex (or reload MCP servers in app settings).
-
-Alternative without binary build:
+Alternative without a prebuilt binary:
 
 ```toml
 [mcp_servers.confluence_replica]
 command = "go"
-args = ["run", "./cmd/mcp", "--config", "config/config.yaml"]
+args = ["run", "-tags", "sqlite_fts5", "./cmd/mcp", "--config", "config/config.yaml"]
 cwd = "/Users/${USER}/dev/codex/confluence-replica"
+env = { CGO_ENABLED = "1" }
 ```
 
-### 3) Cline config
+Smoke test locally:
 
-Cline uses `cline_mcp_settings.json`.
-Typical locations:
-
-- Cline CLI: `~/.cline/data/settings/cline_mcp_settings.json`
-- Cline VS Code extension (macOS):
-  `/Users/<you>/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json`
-
-Add server entry:
-
-```json
-{
-  "mcpServers": {
-    "confluence-replica": {
-      "command": "/Users/${USER}/dev/codex/confluence-replica/bin/mcp",
-      "args": [
-        "--config",
-        "/Users/${USER}/dev/codex/confluence-replica/config/config.yaml"
-      ],
-      "disabled": false
-    }
-  }
-}
+```bash
+make mcp-integration
 ```
 
-Or via CLI:
-
-- `cline mcp add confluence-replica -- /Users/${USER}/dev/codex/confluence-replica/bin/mcp --config /Users/${USER}/dev/codex/confluence-replica/config/config.yaml`
-
-### 4) Smoke check
-
-After connecting, verify in the client that MCP exposes:
-
-- tools: `search`, `ask`, `get_tree`, `what_changed`
-- resource templates: `confluence://page/{id}`, `confluence://chunk/{id}`, `confluence://digest/{date}`
-- prompts: `daily_brief`, `investigate_page`, `compare_versions`
-
-Local smoke without any AI client:
-
-- `make mcp-integration`
-
-Directly:
-
-- `go build -o ./bin/mcp ./cmd/mcp`
-- `go test -tags=integration ./integration -run TestMCPBinarySmoke -count=1`
-
-## Operations
-
-### Runtime: Postgres + pgvector
-
-1. Prepare compose env:
-   - `cp .env.example .env`
-2. Create host data dir:
-   - `mkdir -p "${HOME}/.local/viki/confluence/postgres-data"`
-3. Start database:
-   - `docker compose up -d postgres`
-4. Check health and logs:
-   - `docker compose ps`
-   - `docker compose logs postgres`
-5. Apply migrations:
-   - `make db-migrate`
-6. Verify pgvector extension:
-   - `docker compose exec -T postgres psql -U postgres -d confluence_replica -c "SELECT extname FROM pg_extension WHERE extname='vector';"`
-7. Optional one-shot launcher:
-   - `make runtime-up`
-
-Local DSN:
-
-- `postgres://postgres:postgres@localhost:5432/confluence_replica?sslmode=disable`
-
-### Ollama embeddings (host-native)
-
-- Endpoint: `http://127.0.0.1:11434`
-- Model example: `nomic-embed-text`
-- Config file: `config/config.yaml` (`embeddings.*`)
-- Environment overrides: `OLLAMA_BASE_URL`, `OLLAMA_EMBED_MODEL`
-- Pull model once: `ollama pull nomic-embed-text`
-
-### Confluence PAT from Keychain
-
-`config/config.yaml` supports secret refs in `confluence.token`:
-
-- `keychain://codex_confluence_pat`
-- `keychain://codex_confluence_pat?account=oracle-user`
-
-Example to save PAT:
-
-- `security add-generic-password -U -s codex_confluence_pat -a oracle-user -w "<your_pat_here>"`
-
-### Confluence roots (`parent_ids`)
-
-`confluence.parent_ids` is the source of truth for automatic sync scope.
-
-Example in `config/config.yaml`:
-
-```yaml
-confluence:
-  parent_ids:
-    - "925576634"
-    - "776923811"
-```
-
-Runtime behavior:
-
-- `sync/bootstrap` without manual parent overrides => **full scope** from `confluence.parent_ids`, deletions are allowed.
-- Manual overrides (`--parent-id`, `--parent-ids`, `PARENT_ID`, `PARENT_IDS`) => **partial scope**, no `deleted` events for other roots.
-
-### Makefile quickstart
-
-- `make help`
-- `make runtime-up`
-- `make db-migrate`
-- `make db-vector-check`
-- `make api`
-- `make bootstrap` (uses `confluence.parent_ids`)
-- `make sync` (uses `confluence.parent_ids`)
-- `make sync PARENT_IDS=<page_id_1>,<page_id_2>`
-- `make sync PARENT_ID=<page_id>`
-- `make digest DATE=2026-04-07`
-
-### Commands
-
-- `go run ./cmd/replica bootstrap --config config/config.yaml`
-- `go run ./cmd/replica sync --config config/config.yaml`
-- `go run ./cmd/replica sync --config config/config.yaml --parent-ids <id1>,<id2>`
-- `go run ./cmd/replica sync --config config/config.yaml --parent-id <id>`
-- `go run ./cmd/replica digest --config config/config.yaml --date 2026-04-07`
-- `go run ./cmd/api --config config/config.yaml`
-- `go run ./cmd/mcp --config config/config.yaml`
-- `make mcp-integration`
-
-### Internal API v1
+## Internal API v1
 
 - `POST /search`
 - `POST /chat`
@@ -245,9 +232,9 @@ Runtime behavior:
 - `POST /jobs/sync`
 - `POST /jobs/digest`
 
-### Scheduler
+## Scheduler
 
-Use external cron or CronJob:
+Use external cron or a job runner:
 
 - `sync` every N minutes
 - `digest` every morning in local runtime timezone

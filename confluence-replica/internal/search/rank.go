@@ -1,60 +1,97 @@
 package search
 
-import "sort"
+import (
+	"sort"
+
+	"confluence-replica/internal/store"
+)
+
+const (
+	defaultRRFK            = 60
+	defaultCandidateWindow = 50
+)
 
 type Hit struct {
-	PageID         string  `json:"page_id"`
-	ChunkID        string  `json:"chunk_id,omitempty"`
-	Title          string  `json:"title"`
-	Snippet        string  `json:"snippet"`
-	Version        int     `json:"version"`
-	FTSScore       float64 `json:"fts_score"`
-	SemanticScore  float64 `json:"semantic_score"`
-	Freshness      float64 `json:"freshness"`
-	ParentDistance float64 `json:"parent_distance"`
-	VersionRecency float64 `json:"version_recency"`
-	TagMatch       float64 `json:"tag_match"`
-	FinalScore     float64 `json:"final_score"`
+	PageID           string  `json:"page_id"`
+	ChunkID          string  `json:"chunk_id,omitempty"`
+	Title            string  `json:"title"`
+	Snippet          string  `json:"snippet"`
+	Version          int     `json:"version"`
+	LexicalRank      int     `json:"lexical_rank,omitempty"`
+	LexicalRankValue float64 `json:"lexical_rank_value,omitempty"`
+	VectorRank       int     `json:"vector_rank,omitempty"`
+	VectorDistance   float64 `json:"vector_distance,omitempty"`
+	FusionScore      float64 `json:"fusion_score"`
 }
 
-type Weights struct {
-	FTS            float64
-	Semantic       float64
-	Freshness      float64
-	ParentDistance float64
-	VersionRecency float64
-	TagMatch       float64
+func DefaultCandidateWindow() int {
+	return defaultCandidateWindow
 }
 
-func DefaultWeights() Weights {
-	return Weights{
-		FTS:            0.30,
-		Semantic:       0.30,
-		Freshness:      0.15,
-		ParentDistance: 0.10,
-		VersionRecency: 0.10,
-		TagMatch:       0.05,
+func Fuse(lexical []store.LexicalSearchRow, semantic []store.SemanticSearchRow, limit int) []Hit {
+	if limit <= 0 {
+		limit = len(lexical) + len(semantic)
 	}
-}
 
-func Rerank(hits []Hit, w Weights) []Hit {
-	out := make([]Hit, len(hits))
-	copy(out, hits)
-	for i := range out {
-		distanceBoost := 1.0 / (1.0 + out[i].ParentDistance)
-		out[i].FinalScore =
-			w.FTS*out[i].FTSScore +
-				w.Semantic*out[i].SemanticScore +
-				w.Freshness*out[i].Freshness +
-				w.ParentDistance*distanceBoost +
-				w.VersionRecency*out[i].VersionRecency +
-				w.TagMatch*out[i].TagMatch
+	byChunk := make(map[string]*Hit, len(lexical)+len(semantic))
+	for _, row := range lexical {
+		hit := ensureHit(byChunk, row.ChunkID)
+		hit.PageID = row.PageID
+		hit.ChunkID = row.ChunkID
+		hit.Version = row.Version
+		hit.Title = row.Title
+		if row.Snippet != "" {
+			hit.Snippet = row.Snippet
+		}
+		hit.LexicalRank = row.Rank
+		hit.LexicalRankValue = row.RankValue
+		hit.FusionScore += reciprocalRankScore(row.Rank)
+	}
+	for _, row := range semantic {
+		hit := ensureHit(byChunk, row.ChunkID)
+		hit.PageID = row.PageID
+		hit.ChunkID = row.ChunkID
+		hit.Version = row.Version
+		hit.Title = row.Title
+		if hit.Snippet == "" && row.Snippet != "" {
+			hit.Snippet = row.Snippet
+		}
+		hit.VectorRank = row.Rank
+		hit.VectorDistance = row.Distance
+		hit.FusionScore += reciprocalRankScore(row.Rank)
+	}
+
+	out := make([]Hit, 0, len(byChunk))
+	for _, hit := range byChunk {
+		out = append(out, *hit)
 	}
 	sort.Slice(out, func(i, j int) bool {
-		if out[i].FinalScore == out[j].FinalScore {
+		if out[i].FusionScore == out[j].FusionScore {
+			if out[i].PageID == out[j].PageID {
+				return out[i].ChunkID < out[j].ChunkID
+			}
 			return out[i].PageID < out[j].PageID
 		}
-		return out[i].FinalScore > out[j].FinalScore
+		return out[i].FusionScore > out[j].FusionScore
 	})
-	return out
+	if limit > len(out) {
+		limit = len(out)
+	}
+	return out[:limit]
+}
+
+func ensureHit(byChunk map[string]*Hit, chunkID string) *Hit {
+	if hit, ok := byChunk[chunkID]; ok {
+		return hit
+	}
+	hit := &Hit{}
+	byChunk[chunkID] = hit
+	return hit
+}
+
+func reciprocalRankScore(rank int) float64 {
+	if rank <= 0 {
+		return 0
+	}
+	return 1.0 / float64(defaultRRFK+rank)
 }

@@ -2,22 +2,21 @@ package search
 
 import (
 	"context"
+	"io"
 	"net/http"
-	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
 
 func TestOllamaEmbedderUsesV2Endpoint(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	e := NewOllamaEmbedder("http://ollama.test", "nomic-embed-text", 2*time.Second)
+	e.client = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		if r.URL.Path != "/api/embed" {
 			t.Fatalf("unexpected path: %s", r.URL.Path)
 		}
-		_, _ = w.Write([]byte(`{"embeddings":[[0.1,0.2,0.3]]}`))
-	}))
-	defer srv.Close()
-
-	e := NewOllamaEmbedder(srv.URL, "nomic-embed-text", 2*time.Second)
+		return jsonResponse(http.StatusOK, `{"embeddings":[[0.1,0.2,0.3]]}`), nil
+	})}
 	vec, err := e.Embed(context.Background(), "hello")
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
@@ -28,25 +27,38 @@ func TestOllamaEmbedderUsesV2Endpoint(t *testing.T) {
 }
 
 func TestOllamaEmbedderFallsBackToLegacy(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	e := NewOllamaEmbedder("http://ollama.test", "nomic-embed-text", 2*time.Second)
+	e.client = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		switch r.URL.Path {
 		case "/api/embed":
-			w.WriteHeader(http.StatusNotFound)
-			_, _ = w.Write([]byte(`{"error":"not found"}`))
+			return jsonResponse(http.StatusNotFound, `{"error":"not found"}`), nil
 		case "/api/embeddings":
-			_, _ = w.Write([]byte(`{"embedding":[0.4,0.5]}`))
+			return jsonResponse(http.StatusOK, `{"embedding":[0.4,0.5]}`), nil
 		default:
 			t.Fatalf("unexpected path: %s", r.URL.Path)
+			return nil, nil
 		}
-	}))
-	defer srv.Close()
-
-	e := NewOllamaEmbedder(srv.URL, "nomic-embed-text", 2*time.Second)
+		return nil, nil
+	})}
 	vec, err := e.Embed(context.Background(), "hello")
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
 	if len(vec) != 2 {
 		t.Fatalf("expected 2 dims, got %d", len(vec))
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return fn(r)
+}
+
+func jsonResponse(status int, body string) *http.Response {
+	return &http.Response{
+		StatusCode: status,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(body)),
 	}
 }
