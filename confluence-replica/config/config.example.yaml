@@ -1,5 +1,6 @@
 database:
-  dsn: "postgres://postgres:postgres@localhost:5432/confluence_replica?sslmode=disable"
+  # Leave empty to use the default: ${HOME}/.local/viki/confluence/replica.db
+  path: ""
 
 confluence:
   base_url: "https://gbuconfluence.oraclecorp.com"

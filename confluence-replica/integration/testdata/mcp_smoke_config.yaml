@@ -1,5 +1,5 @@
 database:
-  dsn: "postgres://postgres:postgres@127.0.0.1:1/confluence_replica?sslmode=disable"
+  path: "/tmp/confluence-replica-mcp-smoke.db"
 
 confluence:
   base_url: "https://example.invalid"

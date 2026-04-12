@@ -39,7 +39,7 @@ type Engine struct {
 }
 
 func NewEngine(r Retriever, llm LLM) *Engine {
-	return &Engine{retriever: r, llm: llm, minScore: 0.05}
+	return &Engine{retriever: r, llm: llm, minScore: 0.012}
 }
 
 func (e *Engine) Answer(ctx context.Context, query string) (Response, error) {

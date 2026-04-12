@@ -3,10 +3,10 @@ SHELL := /bin/bash
 -include .env
 
 CONFIG ?= config/config.yaml
-PG_DATA_DIR ?= $(HOME)/.local/viki/confluence/postgres-data
-POSTGRES_DB ?= confluence_replica
-POSTGRES_USER ?= postgres
 BIN_DIR ?= bin
+GO ?= go
+SQLITE_TAGS ?= sqlite_fts5
+INTEGRATION_TAGS ?= integration $(SQLITE_TAGS)
 PARENT_ID ?=
 PARENT_IDS ?=
 DATE ?= $(shell date +%F)
@@ -16,132 +16,90 @@ VERSION ?= $(shell git describe --tags --match 'confluence-replica/v*' --abbrev=
 COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
 BUILD_DATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS ?= -X confluence-replica/internal/version.Version=$(VERSION) -X confluence-replica/internal/version.Commit=$(COMMIT) -X confluence-replica/internal/version.BuildDate=$(BUILD_DATE)
+GO_RUN = CGO_ENABLED=1 $(GO) run -tags "$(SQLITE_TAGS)"
+GO_BUILD = CGO_ENABLED=1 $(GO) build -tags "$(SQLITE_TAGS)"
+GO_TEST = CGO_ENABLED=1 $(GO) test -tags "$(SQLITE_TAGS)"
+GO_TEST_INTEGRATION = CGO_ENABLED=1 $(GO) test -tags "$(INTEGRATION_TAGS)"
 
-.PHONY: help env-init data-dir runtime-up runtime-up-no-ollama runtime-down \
-	postgres-up postgres-down postgres-restart postgres-ps postgres-logs \
-	db-migrate db-vector-check db-shell api bootstrap sync digest test \
-	build build-api build-replica build-mcp mcp mcp-integration update-token update
+.PHONY: help env-init toolchain-check clean api mcp bootstrap sync rebuild update digest \
+	test build build-api build-replica build-mcp mcp-integration update-token
 
 help:
 	@echo "Common targets:"
 	@echo "  make env-init            # Copy .env.example -> .env if missing"
-	@echo "  make runtime-up          # Start postgres + ollama + pull embedding model if needed"
-	@echo "  make runtime-up-no-ollama# Start postgres only"
-	@echo "  make runtime-down        # Stop compose services"
-	@echo "  make postgres-up         # Start postgres container"
-	@echo "  make postgres-down       # Stop postgres container"
-	@echo "  make postgres-logs       # Tail postgres logs"
-	@echo "  make db-migrate          # Apply migrations/001_init.sql"
-	@echo "  make db-vector-check     # Verify pgvector extension"
-	@echo "  make db-shell            # Open psql shell in postgres container"
-	@echo "  make build               # Build both binaries into ./bin"
-	@echo "  make api                 # Run API service"
-	@echo "  make mcp                 # Run MCP stdio server"
-	@echo "  make mcp-integration     # Build MCP binary and run shallow integration smoke"
-	@echo "  make update-token        # Interactively update Confluence PAT in macOS Keychain"
-	@echo "  make bootstrap [PARENT_ID=<id>] [PARENT_IDS=a,b]  # if empty, uses config confluence.parent_ids"
-	@echo "  make sync [PARENT_ID=<id>] [PARENT_IDS=a,b]       # if empty, uses config confluence.parent_ids"
-	@echo "  make update [PARENT_ID=<id>] [PARENT_IDS=a,b]     # alias for sync"
+	@echo "  make toolchain-check     # Verify gcc is available for CGO sqlite builds"
+	@echo "  make test                # Run go test with CGO_ENABLED=1 and sqlite_fts5"
+	@echo "  make build               # Build api, replica, and mcp into ./bin"
+	@echo "  make api                 # Run the HTTP API"
+	@echo "  make mcp                 # Run the MCP stdio server"
+	@echo "  make bootstrap           # Initial import from configured confluence.parent_ids"
+	@echo "  make sync                # Incremental sync from configured roots"
+	@echo "  make rebuild            # Delete sqlite db artifacts and rebuild from Confluence"
 	@echo "  make digest [DATE=YYYY-MM-DD]"
-	@echo "  make test                # Run go test ./..."
+	@echo "  make mcp-integration     # Build MCP binary and run the smoke test"
+	@echo "  make update-token        # Interactively update Confluence PAT in macOS Keychain"
 
 env-init:
 	@if [[ ! -f .env ]]; then cp .env.example .env; fi
 	@echo ".env ready"
 
-data-dir:
-	@mkdir -p "$(PG_DATA_DIR)"
-	@echo "data dir: $(PG_DATA_DIR)"
+toolchain-check:
+	@command -v gcc >/dev/null || { echo "gcc is required because mattn/go-sqlite3 uses CGO"; exit 1; }
 
-runtime-up: env-init data-dir
-	@./scripts/bootstrap-runtime.sh --config "$(CONFIG)"
+clean:
+	@rm -rf "$(BIN_DIR)"
 
-runtime-up-no-ollama: env-init data-dir
-	@./scripts/bootstrap-runtime.sh --config "$(CONFIG)" --no-ollama
+api: toolchain-check
+	@CONF_REPLICA_CONFIG="$(CONFIG)" $(GO_RUN) ./cmd/api --config "$(CONFIG)"
 
-runtime-down:
-	@docker compose down
+mcp: toolchain-check
+	@CONF_REPLICA_CONFIG="$(CONFIG)" $(GO_RUN) ./cmd/mcp --config "$(CONFIG)"
 
-postgres-up: data-dir
-	@docker compose up -d postgres
-
-postgres-down:
-	@docker compose stop postgres
-
-postgres-restart:
-	@docker compose restart postgres
-
-postgres-ps:
-	@docker compose ps
-
-postgres-logs:
-	@docker compose logs -f postgres
-
-db-migrate:
-	@for f in $$(ls migrations/*.sql | sort); do \
-		echo "applying $$f"; \
-		cat "$$f" | docker compose exec -T postgres psql -v ON_ERROR_STOP=1 -U "$(POSTGRES_USER)" -d "$(POSTGRES_DB)"; \
-	done
-
-db-vector-check:
-	@docker compose exec -T postgres psql -U "$(POSTGRES_USER)" -d "$(POSTGRES_DB)" -c "SELECT extname FROM pg_extension WHERE extname='vector';"
-
-db-shell:
-	@docker compose exec postgres psql -U "$(POSTGRES_USER)" -d "$(POSTGRES_DB)"
-
-api:
-	@CONF_REPLICA_CONFIG="$(CONFIG)" go run ./cmd/api
-
-mcp:
-	@CONF_REPLICA_CONFIG="$(CONFIG)" go run ./cmd/mcp
-
-mcp-integration: build-mcp
-	@go test -tags=integration ./integration -run TestMCPBinarySmoke -count=1
-
-build: build-api build-replica build-mcp
+build: toolchain-check build-api build-replica build-mcp
 
 build-api:
 	@mkdir -p "$(BIN_DIR)"
-	@go build -ldflags "$(LDFLAGS)" -o "$(BIN_DIR)/api" ./cmd/api
+	@$(GO_BUILD) -ldflags "$(LDFLAGS)" -o "$(BIN_DIR)/api" ./cmd/api
 	@echo "built $(BIN_DIR)/api"
 
 build-replica:
 	@mkdir -p "$(BIN_DIR)"
-	@go build -ldflags "$(LDFLAGS)" -o "$(BIN_DIR)/replica" ./cmd/replica
+	@$(GO_BUILD) -ldflags "$(LDFLAGS)" -o "$(BIN_DIR)/replica" ./cmd/replica
 	@echo "built $(BIN_DIR)/replica"
 
 build-mcp:
 	@mkdir -p "$(BIN_DIR)"
-	@go build -ldflags "$(LDFLAGS)" -o "$(BIN_DIR)/mcp" ./cmd/mcp
+	@$(GO_BUILD) -ldflags "$(LDFLAGS)" -o "$(BIN_DIR)/mcp" ./cmd/mcp
 	@echo "built $(BIN_DIR)/mcp"
 
-bootstrap:
-	@if [[ -n "$(PARENT_IDS)" || -n "$(PARENT_ID)" ]]; then \
-		args=""; \
-		if [[ -n "$(PARENT_IDS)" ]]; then args="$$args --parent-ids \"$(PARENT_IDS)\""; fi; \
-		if [[ -n "$(PARENT_ID)" ]]; then args="$$args --parent-id \"$(PARENT_ID)\""; fi; \
-		eval "go run ./cmd/replica bootstrap --config \"$(CONFIG)\" $$args"; \
-	else \
-		go run ./cmd/replica bootstrap --config "$(CONFIG)"; \
-	fi
+bootstrap: toolchain-check
+	@args=(--config "$(CONFIG)"); \
+	if [[ -n "$(PARENT_IDS)" ]]; then args+=(--parent-ids "$(PARENT_IDS)"); fi; \
+	if [[ -n "$(PARENT_ID)" ]]; then args+=(--parent-id "$(PARENT_ID)"); fi; \
+	CONF_REPLICA_CONFIG="$(CONFIG)" $(GO_RUN) ./cmd/replica bootstrap "$${args[@]}"
 
-sync:
-	@if [[ -n "$(PARENT_IDS)" || -n "$(PARENT_ID)" ]]; then \
-		args=""; \
-		if [[ -n "$(PARENT_IDS)" ]]; then args="$$args --parent-ids \"$(PARENT_IDS)\""; fi; \
-		if [[ -n "$(PARENT_ID)" ]]; then args="$$args --parent-id \"$(PARENT_ID)\""; fi; \
-		eval "go run ./cmd/replica sync --config \"$(CONFIG)\" $$args"; \
-	else \
-		go run ./cmd/replica sync --config "$(CONFIG)"; \
-	fi
+sync: toolchain-check
+	@args=(--config "$(CONFIG)"); \
+	if [[ -n "$(PARENT_IDS)" ]]; then args+=(--parent-ids "$(PARENT_IDS)"); fi; \
+	if [[ -n "$(PARENT_ID)" ]]; then args+=(--parent-id "$(PARENT_ID)"); fi; \
+	CONF_REPLICA_CONFIG="$(CONFIG)" $(GO_RUN) ./cmd/replica sync "$${args[@]}"
+
+rebuild: toolchain-check
+	@args=(--config "$(CONFIG)"); \
+	if [[ -n "$(PARENT_IDS)" ]]; then args+=(--parent-ids "$(PARENT_IDS)"); fi; \
+	if [[ -n "$(PARENT_ID)" ]]; then args+=(--parent-id "$(PARENT_ID)"); fi; \
+	CONF_REPLICA_CONFIG="$(CONFIG)" $(GO_RUN) ./cmd/replica rebuild "$${args[@]}"
 
 update: sync
 
-digest:
-	@go run ./cmd/replica digest --config "$(CONFIG)" --date "$(DATE)"
+digest: toolchain-check
+	@CONF_REPLICA_CONFIG="$(CONFIG)" $(GO_RUN) ./cmd/replica digest --config "$(CONFIG)" --date "$(DATE)"
 
-test:
-	@go test ./...
+test: toolchain-check
+	@$(GO_TEST) ./...
+
+mcp-integration: build-mcp
+	@MCP_BINARY="$(abspath $(BIN_DIR))/mcp" $(GO_TEST_INTEGRATION) ./integration -run TestMCPBinarySmoke -count=1
 
 update-token:
 	@service="$(KEYCHAIN_SERVICE)"; \

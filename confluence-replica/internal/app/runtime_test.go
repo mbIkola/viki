@@ -1,30 +1,19 @@
 package app
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-)
 
-func TestSanitizeDSNMasksPassword(t *testing.T) {
-	in := "postgres://alice:secret@localhost:5432/confluence_replica?sslmode=disable"
-	got := sanitizeDSN(in)
-	if got == in {
-		t.Fatalf("expected sanitized dsn to differ from input")
-	}
-	if got == "" {
-		t.Fatalf("expected non-empty dsn")
-	}
-	if strings.Contains(got, "secret") {
-		t.Fatalf("password leaked in dsn: %s", got)
-	}
-}
+	"confluence-replica/internal/search"
+)
 
 func TestLoadConfigWithOptionsRequiresParentIDsWithoutOverride(t *testing.T) {
 	cfgPath := writeTestConfig(t, `
 database:
-  dsn: "postgres://postgres:postgres@localhost:5432/confluence_replica?sslmode=disable"
+  path: "/tmp/replica.db"
 confluence:
   base_url: "https://example.atlassian.net"
   token: "plain-token"
@@ -41,7 +30,7 @@ confluence:
 func TestLoadConfigWithOptionsAllowsMissingParentIDsWithOverride(t *testing.T) {
 	cfgPath := writeTestConfig(t, `
 database:
-  dsn: "postgres://postgres:postgres@localhost:5432/confluence_replica?sslmode=disable"
+  path: "/tmp/replica.db"
 confluence:
   base_url: "https://example.atlassian.net"
   token: "plain-token"
@@ -62,7 +51,7 @@ confluence:
 func TestLoadConfigWithOptionsNormalizesParentIDs(t *testing.T) {
 	cfgPath := writeTestConfig(t, `
 database:
-  dsn: "postgres://postgres:postgres@localhost:5432/confluence_replica?sslmode=disable"
+  path: "/tmp/replica.db"
 confluence:
   base_url: "https://example.atlassian.net"
   token: "plain-token"
@@ -77,6 +66,59 @@ confluence:
 	}
 	if got := strings.Join(cfg.Confluence.ParentIDs, ","); got != "10,20" {
 		t.Fatalf("unexpected normalized parent_ids: %v", cfg.Confluence.ParentIDs)
+	}
+}
+
+func TestLoadConfigWithOptionsDefaultsDatabasePath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	cfgPath := writeTestConfig(t, `
+confluence:
+  base_url: "https://example.atlassian.net"
+  token: "plain-token"
+  parent_ids: ["10"]
+embeddings:
+  provider: "noop"
+  model: ""
+`)
+
+	cfg, err := LoadConfigWithOptions(cfgPath, LoadOptions{
+		RequireConfluenceToken: false,
+		RequireParentIDs:       true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	want := filepath.Join(home, ".local", "viki", "confluence", "replica.db")
+	if cfg.Database.Path != want {
+		t.Fatalf("unexpected default database path: got %q want %q", cfg.Database.Path, want)
+	}
+}
+
+func TestBuildIndexProfileUsesNoopFallback(t *testing.T) {
+	profile, err := buildIndexProfile(context.Background(), Config{
+		Embeddings: struct {
+			Provider   string `yaml:"provider"`
+			BaseURL    string `yaml:"base_url"`
+			Model      string `yaml:"model"`
+			RequestSec int    `yaml:"request_timeout_seconds"`
+		}{
+			Provider: "noop",
+		},
+	}, search.NoopEmbedder{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if profile.EmbeddingProvider != "noop" {
+		t.Fatalf("unexpected provider: %#v", profile)
+	}
+	if profile.EmbeddingDimension != 1 {
+		t.Fatalf("expected noop dimension of 1, got %#v", profile)
+	}
+	if profile.ChunkingVersion != defaultChunkingVersion {
+		t.Fatalf("unexpected chunking version: %#v", profile)
 	}
 }
 

@@ -21,13 +21,15 @@ const (
 
 func main() {
 	if len(os.Args) < 2 {
-		log.Fatalf("usage: replica <bootstrap|sync|digest> [flags]")
+		log.Fatalf("usage: replica <bootstrap|sync|rebuild|digest> [flags]")
 	}
 
 	cmd := os.Args[1]
 	switch cmd {
 	case "bootstrap", "sync":
 		runSyncLike(cmd)
+	case "rebuild":
+		runRebuild()
 	case "digest":
 		runDigest()
 	default:
@@ -79,6 +81,49 @@ func runSyncLike(mode string) {
 		log.Fatal(err)
 	}
 	fmt.Printf("%s completed for %d parent roots (%s)\n", mode, len(parentIDs), scopeMode)
+}
+
+func runRebuild() {
+	fs := flag.NewFlagSet("rebuild", flag.ExitOnError)
+	configPath := fs.String("config", "config/config.yaml", "path to config yaml")
+	parentID := fs.String("parent-id", "", "confluence parent page id")
+	parentIDsCSV := fs.String("parent-ids", "", "comma-separated confluence parent page ids")
+	quiet := fs.Bool("quiet", false, "set log level to ERROR")
+	verbose := fs.Bool("verbose", false, "set log level to DEBUG")
+	_ = fs.Parse(os.Args[2:])
+
+	ctx := context.Background()
+	overrideParentIDs := collectParentOverrides(*parentID, *parentIDsCSV)
+	cfg, err := app.LoadConfigWithOptions(*configPath, app.LoadOptions{
+		RequireConfluenceToken: true,
+		RequireParentIDs:       true,
+		ParentIDsOverride:      overrideParentIDs,
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err := logx.Configure(cfg.Logging.Level, *quiet, *verbose); err != nil {
+		log.Fatal(err)
+	}
+	parentIDs, scopeMode, err := resolveParentIDs(cfg.Confluence.ParentIDs, overrideParentIDs)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err := removeSQLiteArtifacts(cfg.Database.Path); err != nil {
+		log.Fatal(err)
+	}
+	logx.Infof("[replica] command=rebuild config=%s database_path=%s scope_mode=%s parent_ids=%v", *configPath, cfg.Database.Path, scopeMode, parentIDs)
+
+	rt, err := app.NewRuntime(ctx, cfg)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer rt.Close()
+
+	if err := rt.Ingest.Bootstrap(ctx, parentIDs, scopeMode); err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("rebuild completed for %d parent roots (%s)\n", len(parentIDs), scopeMode)
 }
 
 func runDigest() {
@@ -166,4 +211,13 @@ func normalizeIDs(ids []string) []string {
 		out = append(out, id)
 	}
 	return out
+}
+
+func removeSQLiteArtifacts(path string) error {
+	for _, target := range []string{path, path + "-wal", path + "-shm"} {
+		if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove %s: %w", target, err)
+		}
+	}
+	return nil
 }

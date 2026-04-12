@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestCollectParentOverrides(t *testing.T) {
 	ids := collectParentOverrides("925", " 100,200,100 ,, ")
@@ -35,5 +39,24 @@ func TestResolveParentIDsUsesConfigAsFull(t *testing.T) {
 	}
 	if len(ids) != 2 || ids[0] != "cfg1" || ids[1] != "cfg2" {
 		t.Fatalf("unexpected ids: %v", ids)
+	}
+}
+
+func TestRemoveSQLiteArtifactsRemovesDatabaseSidecars(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "replica.db")
+	for _, path := range []string{base, base + "-wal", base + "-shm"} {
+		if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+			t.Fatalf("write %s: %v", path, err)
+		}
+	}
+
+	if err := removeSQLiteArtifacts(base); err != nil {
+		t.Fatalf("unexpected cleanup error: %v", err)
+	}
+
+	for _, path := range []string{base, base + "-wal", base + "-shm"} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("expected %s to be removed, stat err=%v", path, err)
+		}
 	}
 }

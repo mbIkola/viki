@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -21,7 +23,8 @@ type mcpSmokeResult struct {
 }
 
 func TestMCPBinarySmoke(t *testing.T) {
-	got, err := probeMCPBinarySmoke(defaultMCPBinaryPath(), defaultMCPConfigPath())
+	configPath := writeSmokeConfig(t)
+	got, err := probeMCPBinarySmoke(defaultMCPBinaryPath(), configPath)
 	if err != nil {
 		t.Fatalf("probe mcp binary smoke: %v", err)
 	}
@@ -47,6 +50,23 @@ func defaultMCPConfigPath() string {
 		return path
 	}
 	return "testdata/mcp_smoke_config.yaml"
+}
+
+func writeSmokeConfig(t *testing.T) string {
+	t.Helper()
+
+	templatePath := defaultMCPConfigPath()
+	raw, err := os.ReadFile(templatePath)
+	if err != nil {
+		t.Fatalf("read smoke config template: %v", err)
+	}
+	dbPath := filepath.Join(t.TempDir(), "mcp-smoke.db")
+	body := strings.ReplaceAll(string(raw), "/tmp/confluence-replica-mcp-smoke.db", dbPath)
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, []byte(body), 0o600); err != nil {
+		t.Fatalf("write smoke config: %v", err)
+	}
+	return configPath
 }
 
 func probeMCPBinarySmoke(binaryPath, configPath string) (mcpSmokeResult, error) {

@@ -3,8 +3,8 @@ package app
 import (
 	"context"
 	"fmt"
-	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -18,9 +18,15 @@ import (
 	"confluence-replica/internal/store"
 )
 
+const (
+	defaultSchemaVersion          = 1
+	defaultChunkingVersion        = "runes900-v1"
+	defaultEmbeddingNormalization = "none"
+)
+
 type Config struct {
 	Database struct {
-		DSN string `yaml:"dsn"`
+		Path string `yaml:"path"`
 	} `yaml:"database"`
 	Confluence struct {
 		BaseURL    string   `yaml:"base_url"`
@@ -44,7 +50,7 @@ type Config struct {
 
 type Runtime struct {
 	Config Config
-	Store  *store.PostgresStore
+	Store  store.Store
 	Ingest *ingest.Service
 	Digest *ingest.DigestService
 	Search *search.Service
@@ -73,8 +79,8 @@ func LoadConfigWithOptions(path string, opts LoadOptions) (Config, error) {
 	if err := yaml.Unmarshal(raw, &cfg); err != nil {
 		return Config{}, err
 	}
-	if cfg.Database.DSN == "" {
-		cfg.Database.DSN = os.Getenv("DATABASE_DSN")
+	if cfg.Database.Path == "" {
+		cfg.Database.Path = os.Getenv("DATABASE_PATH")
 	}
 	if cfg.Confluence.Token == "" {
 		cfg.Confluence.Token = os.Getenv("CONFLUENCE_PAT")
@@ -125,23 +131,27 @@ func LoadConfigWithOptions(path string, opts LoadOptions) (Config, error) {
 	if cfg.Embeddings.BaseURL == "" {
 		cfg.Embeddings.BaseURL = "http://127.0.0.1:11434"
 	}
-	if cfg.Database.DSN == "" {
-		return Config{}, fmt.Errorf("database dsn missing")
+	if cfg.Database.Path == "" {
+		cfg.Database.Path = defaultDatabasePath()
 	}
 	return cfg, nil
 }
 
 func NewRuntime(ctx context.Context, cfg Config) (*Runtime, error) {
-	logx.Infof("[runtime] init database_dsn=%s", sanitizeDSN(cfg.Database.DSN))
 	logx.Infof("[runtime] embeddings provider=%s base_url=%s model=%s", cfg.Embeddings.Provider, cfg.Embeddings.BaseURL, cfg.Embeddings.Model)
-	st, err := store.NewPostgresStore(ctx, cfg.Database.DSN)
-	if err != nil {
-		return nil, err
-	}
 	cl := confluence.NewClient(cfg.Confluence.BaseURL, cfg.Confluence.Token, time.Duration(cfg.Confluence.RequestSec)*time.Second)
 	var emb search.Embedder = search.NoopEmbedder{}
 	if cfg.Embeddings.Provider == "ollama" && cfg.Embeddings.Model != "" {
 		emb = search.NewOllamaEmbedder(cfg.Embeddings.BaseURL, cfg.Embeddings.Model, time.Duration(cfg.Embeddings.RequestSec)*time.Second)
+	}
+	profile, err := buildIndexProfile(ctx, cfg, emb)
+	if err != nil {
+		return nil, err
+	}
+	logx.Infof("[runtime] init database_path=%s", cfg.Database.Path)
+	st, err := store.NewSQLiteStore(ctx, cfg.Database.Path, profile)
+	if err != nil {
+		return nil, err
 	}
 	ing := ingest.NewService(cl, st, emb)
 	digest := ingest.NewDigestService(st)
@@ -156,20 +166,38 @@ func (r *Runtime) Close() {
 	}
 }
 
-func sanitizeDSN(dsn string) string {
-	u, err := url.Parse(dsn)
+func defaultDatabasePath() string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return filepath.Join(".local", "viki", "confluence", "replica.db")
+	}
+	return filepath.Join(home, ".local", "viki", "confluence", "replica.db")
+}
+
+func buildIndexProfile(ctx context.Context, cfg Config, emb search.Embedder) (store.IndexProfile, error) {
+	profile := store.IndexProfile{
+		SchemaVersion:          defaultSchemaVersion,
+		ChunkingVersion:        defaultChunkingVersion,
+		EmbeddingNormalization: defaultEmbeddingNormalization,
+	}
+
+	if cfg.Embeddings.Provider == "noop" || cfg.Embeddings.Model == "" {
+		profile.EmbeddingProvider = "noop"
+		profile.EmbeddingDimension = 1
+		return profile, nil
+	}
+
+	vector, err := emb.Embed(ctx, "confluence-replica index profile probe")
 	if err != nil {
-		return dsn
+		return store.IndexProfile{}, fmt.Errorf("probe embedding dimension: %w", err)
 	}
-	if u.User != nil {
-		user := u.User.Username()
-		if user != "" {
-			u.User = url.UserPassword(user, "xxxxx")
-		} else {
-			u.User = url.User("xxxxx")
-		}
+	if len(vector) == 0 {
+		return store.IndexProfile{}, fmt.Errorf("probe embedding dimension: empty embedding")
 	}
-	return u.String()
+	profile.EmbeddingProvider = cfg.Embeddings.Provider
+	profile.EmbeddingModel = cfg.Embeddings.Model
+	profile.EmbeddingDimension = len(vector)
+	return profile, nil
 }
 
 func normalizeParentIDs(ids []string) []string {
