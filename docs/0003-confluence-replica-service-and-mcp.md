@@ -60,7 +60,7 @@ flowchart LR
   - `make runtime-up-no-ollama` (если Ollama уже живет отдельно);
   - `make db-migrate`;
   - `make build` / `make build-mcp`;
-  - `make mcp-smoke`.
+  - `make mcp-integration` (или `make mcp-smoke` как alias).
 
 - Sync roots теперь задаются только через `confluence.parent_ids`:
   - это явный список root pages для авто-синхронизации;
@@ -92,12 +92,12 @@ flowchart LR
 
 - Codex/Cline конфиг с `mcp_servers.confluence_replica`
 - Исполняемый `bin/mcp` (или `go run ./cmd/mcp`)
-- Smoke script: `scripts/mcp-smoke.py`
+- Go integration smoke: `go test -tags=integration ./integration`
 
 ## TODO (нереализованное)
 
 - [ ] Добавить contract snapshot тесты для MCP ответов (`tools/call`, `resources/read`, `prompts/get`) для контроля breaking changes.
-- [ ] Добавить полноценный integration-smoke с реальным MCP client handshake в CI (не только локальный скрипт).
+- [ ] Расширить integration-smoke beyond surface listing: добавить contract checks для `tools/call`, `resources/read`, `prompts/get` без привязки к живому upstream.
 - [ ] Реализовать явный `get_page_version` (с выбором версии), сейчас через MCP читается только current page resource.
 - [ ] Реализовать отдельный инструмент сравнения версий как tool (сейчас `compare_versions` есть только как prompt-шаблон).
 - [ ] Улучшить observability MCP слоя: структурные метрики по latency/errors на tool/resource/prompt handlers.
