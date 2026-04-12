@@ -144,12 +144,12 @@ After connecting, verify in the client that MCP exposes:
 
 Local smoke without any AI client:
 
-- `make mcp-smoke`
+- `make mcp-integration`
 
-Or directly:
+Directly:
 
-- `./scripts/mcp-smoke.py --config config/config.yaml`
-- `./scripts/mcp-smoke.py --go-run --config config/config.yaml`
+- `go build -o ./bin/mcp ./cmd/mcp`
+- `go test -tags=integration ./integration -run TestMCPBinarySmoke -count=1`
 
 ## Operations
 
@@ -234,7 +234,7 @@ Runtime behavior:
 - `go run ./cmd/replica digest --config config/config.yaml --date 2026-04-07`
 - `go run ./cmd/api --config config/config.yaml`
 - `go run ./cmd/mcp --config config/config.yaml`
-- `make mcp-smoke`
+- `make mcp-integration`
 
 ### Internal API v1
 
