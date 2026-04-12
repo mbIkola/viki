@@ -6,6 +6,15 @@ import (
 	"time"
 )
 
+type IndexProfile struct {
+	SchemaVersion          int
+	EmbeddingProvider      string
+	EmbeddingModel         string
+	EmbeddingDimension     int
+	ChunkingVersion        string
+	EmbeddingNormalization string
+}
+
 type Page struct {
 	PageID       string
 	SpaceKey     string

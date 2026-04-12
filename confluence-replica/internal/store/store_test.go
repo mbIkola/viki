@@ -168,6 +168,77 @@ func TestSQLiteStoreUpsertAndSearch(t *testing.T) {
 	}
 }
 
+func TestSQLiteStoreReadAPIs(t *testing.T) {
+	ctx := context.Background()
+	st := newTestSQLiteStore(t)
+	defer st.Close()
+
+	page := Page{
+		PageID:       "page-read",
+		SpaceKey:     "OPS",
+		Title:        "Readable",
+		ParentPageID: "",
+		CurrentVer:   2,
+		UpdatedAt:    time.Date(2026, 4, 12, 11, 0, 0, 0, time.UTC),
+		CreatedAt:    time.Date(2026, 4, 10, 11, 0, 0, 0, time.UTC),
+		PathHash:     "readable-hash",
+		Tags:         []string{"docs"},
+		Status:       "current",
+	}
+	version := PageVersion{
+		PageID:     "page-read",
+		Version:    2,
+		AuthorID:   "user-1",
+		BodyRaw:    "<p>Readable body</p>",
+		BodyNorm:   "Readable body",
+		BodyHash:   "readable-body-hash",
+		Title:      "Readable",
+		ParentPage: "",
+		FetchedAt:  time.Date(2026, 4, 12, 11, 0, 0, 0, time.UTC),
+	}
+	chunks := []Chunk{{
+		PageID:     "page-read",
+		Version:    2,
+		ChunkID:    "page-read:2:0",
+		ChunkText:  "Readable chunk",
+		ChunkHash:  "readable-chunk-hash",
+		TokenCount: 2,
+	}}
+	if err := st.UpsertPageWithVersion(ctx, page, version, chunks); err != nil {
+		t.Fatalf("unexpected upsert error: %v", err)
+	}
+
+	doc, err := st.GetPageCurrent(ctx, "page-read")
+	if err != nil {
+		t.Fatalf("unexpected current page error: %v", err)
+	}
+	if doc.Version != 2 || doc.BodyHash != "readable-body-hash" {
+		t.Fatalf("unexpected current page doc: %#v", doc)
+	}
+	if doc.Title != "Readable" || len(doc.Labels) != 1 || doc.Labels[0] != "docs" {
+		t.Fatalf("unexpected current page metadata: %#v", doc)
+	}
+
+	chunk, err := st.GetChunk(ctx, "page-read:2:0")
+	if err != nil {
+		t.Fatalf("unexpected chunk error: %v", err)
+	}
+	if chunk.PageID != "page-read" || chunk.ChunkHash != "readable-chunk-hash" {
+		t.Fatalf("unexpected chunk doc: %#v", chunk)
+	}
+
+	states, err := st.ListCurrentStates(ctx)
+	if err != nil {
+		t.Fatalf("unexpected current states error: %v", err)
+	}
+	if len(states) != 1 {
+		t.Fatalf("expected one current state, got %#v", states)
+	}
+	if states[0].PageID != "page-read" || states[0].BodyNormHash != "readable-body-hash" {
+		t.Fatalf("unexpected current state: %#v", states[0])
+	}
+}
+
 func TestSQLiteStoreDigestTreeAndDiffQueries(t *testing.T) {
 	ctx := context.Background()
 	st := newTestSQLiteStore(t)
