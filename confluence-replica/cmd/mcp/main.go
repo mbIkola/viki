@@ -6,18 +6,29 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"time"
 
 	"confluence-replica/internal/app"
+	"confluence-replica/internal/confluence"
 	"confluence-replica/internal/logx"
 	mcpserver "confluence-replica/internal/mcp"
 	"confluence-replica/internal/store"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+type confluenceWriteClient interface {
+	UpdatePage(ctx context.Context, pageID, title, bodyStorage, versionMessage string) (confluence.Page, error)
+	CreateChildPage(ctx context.Context, parentPageID, title, bodyStorage, versionMessage string) (confluence.Page, error)
+	GetPage(ctx context.Context, pageID string) (confluence.Page, error)
+}
+
 type runtimeBackend struct {
-	rt *app.Runtime
+	rt           *app.Runtime
+	client       confluenceWriteClient
+	writeEnabled bool
+	upsertPage   func(ctx context.Context, page confluence.Page) error
 }
 
 func (r runtimeBackend) Search(ctx context.Context, query string, limit int, includeSnippets bool) ([]mcpserver.SearchResult, error) {
@@ -172,6 +183,121 @@ func (r runtimeBackend) GetChanges(ctx context.Context, query mcpserver.ChangeQu
 	return out, nil
 }
 
+func (r runtimeBackend) UpdatePage(ctx context.Context, req mcpserver.UpdatePageRequest) (mcpserver.PageMutationResult, error) {
+	if err := r.guardWriteEnabled(); err != nil {
+		return mcpserver.PageMutationResult{}, err
+	}
+	if r.client == nil {
+		return mcpserver.PageMutationResult{}, errors.New("upstream_error: confluence client is not configured")
+	}
+
+	updated, err := r.client.UpdatePage(ctx, req.PageID, strptr(req.Title), strptr(req.BodyStorage), "")
+	if err != nil {
+		return mcpserver.PageMutationResult{}, classifyWriteError(err)
+	}
+	if err := r.upsertConfluencePage(ctx, updated); err != nil {
+		return mcpserver.PageMutationResult{}, localRefreshFailedError(updated.ID, err)
+	}
+	return toMutationResult(updated), nil
+}
+
+func (r runtimeBackend) CreateChildPage(ctx context.Context, req mcpserver.CreateChildPageRequest) (mcpserver.PageMutationResult, error) {
+	if err := r.guardWriteEnabled(); err != nil {
+		return mcpserver.PageMutationResult{}, err
+	}
+	if r.client == nil {
+		return mcpserver.PageMutationResult{}, errors.New("upstream_error: confluence client is not configured")
+	}
+
+	created, err := r.client.CreateChildPage(ctx, req.ParentPageID, req.Title, req.BodyStorage, "")
+	if err != nil {
+		return mcpserver.PageMutationResult{}, classifyWriteError(err)
+	}
+
+	if err := r.upsertConfluencePage(ctx, created); err != nil {
+		return mcpserver.PageMutationResult{}, localRefreshFailedError(created.ID, err)
+	}
+
+	parent, err := r.client.GetPage(ctx, req.ParentPageID)
+	if err != nil {
+		return mcpserver.PageMutationResult{}, localRefreshFailedError(created.ID, fmt.Errorf("refresh parent page %s: %w", req.ParentPageID, err))
+	}
+	if err := r.upsertConfluencePage(ctx, parent); err != nil {
+		return mcpserver.PageMutationResult{}, localRefreshFailedError(created.ID, fmt.Errorf("upsert parent page %s: %w", req.ParentPageID, err))
+	}
+
+	return toMutationResult(created), nil
+}
+
+func (r runtimeBackend) guardWriteEnabled() error {
+	if !r.writeEnabled {
+		return errors.New("write_disabled: MCP write operations are disabled")
+	}
+	return nil
+}
+
+func (r runtimeBackend) upsertConfluencePage(ctx context.Context, page confluence.Page) error {
+	if r.upsertPage != nil {
+		return r.upsertPage(ctx, page)
+	}
+	if r.rt == nil || r.rt.Ingest == nil {
+		return errors.New("ingest service is not configured")
+	}
+	_, err := r.rt.Ingest.UpsertConfluencePage(ctx, page)
+	return err
+}
+
+func toMutationResult(page confluence.Page) mcpserver.PageMutationResult {
+	return mcpserver.PageMutationResult{
+		PageID:       page.ID,
+		Title:        page.Title,
+		ParentPageID: parentID(page),
+		Version:      page.Version.Number,
+		SpaceKey:     page.Space.Key,
+		PageURI:      fmt.Sprintf("confluence://page/%s", page.ID),
+	}
+}
+
+func parentID(page confluence.Page) string {
+	if len(page.Ancestors) == 0 {
+		return ""
+	}
+	return page.Ancestors[len(page.Ancestors)-1].ID
+}
+
+func strptr(v *string) string {
+	if v == nil {
+		return ""
+	}
+	return *v
+}
+
+func classifyWriteError(err error) error {
+	if err == nil {
+		return nil
+	}
+
+	var httpErr *confluence.HTTPError
+	if errors.As(err, &httpErr) {
+		switch httpErr.Status {
+		case http.StatusUnauthorized, http.StatusForbidden:
+			return fmt.Errorf("auth_error: %w", err)
+		case http.StatusConflict:
+			return fmt.Errorf("version_conflict: %w", err)
+		default:
+			return fmt.Errorf("upstream_error: %w", err)
+		}
+	}
+	if confluence.IsVersionConflict(err) {
+		return fmt.Errorf("version_conflict: %w", err)
+	}
+	return fmt.Errorf("upstream_error: %w", err)
+}
+
+func localRefreshFailedError(pageID string, err error) error {
+	return fmt.Errorf("local_refresh_failed: remote_applied=true local_refreshed=false page_id=%s: %w", pageID, err)
+}
+
 func main() {
 	defaultConfigPath := os.Getenv("CONF_REPLICA_CONFIG")
 	if defaultConfigPath == "" {
@@ -197,7 +323,12 @@ func main() {
 	}
 	defer rt.Close()
 
-	srv := mcpserver.NewServer(runtimeBackend{rt: rt})
+	client := confluence.NewClient(cfg.Confluence.BaseURL, cfg.Confluence.Token, time.Duration(cfg.Confluence.RequestSec)*time.Second)
+	srv := mcpserver.NewServer(runtimeBackend{
+		rt:           rt,
+		client:       client,
+		writeEnabled: cfg.MCP.WriteEnabled,
+	})
 	if err := srv.Run(context.Background(), &sdk.StdioTransport{}); err != nil && !errors.Is(err, context.Canceled) {
 		log.Fatal(err)
 	}

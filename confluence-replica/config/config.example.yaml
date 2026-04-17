@@ -2,6 +2,10 @@ database:
   # Leave empty to use the default: ${HOME}/.local/viki/confluence/replica.db
   path: ""
 
+mcp:
+  # Enables the MCP write tools and demands a resolvable non-empty Confluence token.
+  write_enabled: false
+
 confluence:
   base_url: "https://gbuconfluence.oraclecorp.com"
   token: "keychain://codex_confluence_pat"

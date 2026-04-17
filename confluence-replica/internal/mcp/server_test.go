@@ -98,6 +98,27 @@ func (f fakeBackend) GetChanges(_ context.Context, query ChangeQuery) ([]ChangeR
 	}, nil
 }
 
+func (f fakeBackend) UpdatePage(_ context.Context, req UpdatePageRequest) (PageMutationResult, error) {
+	title := "Runbook"
+	if req.Title != nil {
+		title = *req.Title
+	}
+	return PageMutationResult{
+		PageID:  req.PageID,
+		Title:   title,
+		Version: 8,
+	}, nil
+}
+
+func (f fakeBackend) CreateChildPage(_ context.Context, req CreateChildPageRequest) (PageMutationResult, error) {
+	return PageMutationResult{
+		PageID:       "100",
+		Title:        req.Title,
+		ParentPageID: req.ParentPageID,
+		Version:      1,
+	}, nil
+}
+
 func connectClient(t *testing.T, s *Server) *sdk.ClientSession {
 	t.Helper()
 	ctx := context.Background()
@@ -125,7 +146,7 @@ func TestSearchToolExposedAndCallable(t *testing.T) {
 		}
 		toolNames[tool.Name] = true
 	}
-	for _, expected := range []string{"search", "ask", "get_tree", "what_changed"} {
+	for _, expected := range []string{"search", "ask", "get_tree", "what_changed", "update_page", "create_child_page"} {
 		if !toolNames[expected] {
 			t.Fatalf("expected tool %q to be listed", expected)
 		}
@@ -151,6 +172,332 @@ func TestSearchToolExposedAndCallable(t *testing.T) {
 	raw, _ := json.Marshal(resp.StructuredContent)
 	if !strings.Contains(string(raw), "\"page_id\":\"42\"") {
 		t.Fatalf("expected structured hit payload: %s", string(raw))
+	}
+}
+
+func TestUpdatePageRejectsMissingPatchFields(t *testing.T) {
+	s := NewServer(fakeBackend{})
+	cs := connectClient(t, s)
+	defer cs.Close()
+
+	resp, err := cs.CallTool(context.Background(), &sdk.CallToolParams{
+		Name:      "update_page",
+		Arguments: map[string]any{"page_id": "42"},
+	})
+	if err != nil {
+		t.Fatalf("call update_page: %v", err)
+	}
+	if !resp.IsError {
+		t.Fatalf("expected MCP error result for missing patch fields")
+	}
+	if len(resp.Content) == 0 {
+		t.Fatalf("expected error content for missing patch fields")
+	}
+	tc, ok := resp.Content[0].(*sdk.TextContent)
+	if !ok {
+		t.Fatalf("expected text content, got %T", resp.Content[0])
+	}
+	if !strings.Contains(tc.Text, "validation_error: at least one of title or body_storage is required") {
+		t.Fatalf("unexpected error: %s", tc.Text)
+	}
+}
+
+func TestUpdatePageRejectsMissingPageID(t *testing.T) {
+	s := NewServer(fakeBackend{})
+	cs := connectClient(t, s)
+	defer cs.Close()
+
+	resp, err := cs.CallTool(context.Background(), &sdk.CallToolParams{
+		Name:      "update_page",
+		Arguments: map[string]any{"title": "New Title"},
+	})
+	if err != nil {
+		t.Fatalf("call update_page: %v", err)
+	}
+	if !resp.IsError {
+		t.Fatalf("expected MCP error result for missing page_id")
+	}
+	if len(resp.Content) == 0 {
+		t.Fatalf("expected error content for missing page_id")
+	}
+	tc, ok := resp.Content[0].(*sdk.TextContent)
+	if !ok {
+		t.Fatalf("expected text content, got %T", resp.Content[0])
+	}
+	if !strings.Contains(tc.Text, "missing properties") || !strings.Contains(tc.Text, "\"page_id\"") {
+		t.Fatalf("unexpected error: %s", tc.Text)
+	}
+}
+
+func TestUpdatePageRejectsEmptyPageID(t *testing.T) {
+	s := NewServer(fakeBackend{})
+	cs := connectClient(t, s)
+	defer cs.Close()
+
+	resp, err := cs.CallTool(context.Background(), &sdk.CallToolParams{
+		Name: "update_page",
+		Arguments: map[string]any{
+			"page_id": "   ",
+			"title":   "New Title",
+		},
+	})
+	if err != nil {
+		t.Fatalf("call update_page: %v", err)
+	}
+	if !resp.IsError {
+		t.Fatalf("expected MCP error result for empty page_id")
+	}
+	if len(resp.Content) == 0 {
+		t.Fatalf("expected error content for empty page_id")
+	}
+	tc, ok := resp.Content[0].(*sdk.TextContent)
+	if !ok {
+		t.Fatalf("expected text content, got %T", resp.Content[0])
+	}
+	if !strings.Contains(tc.Text, "validation_error: page_id is required") {
+		t.Fatalf("unexpected error: %s", tc.Text)
+	}
+}
+
+func TestUpdatePageRejectsPresentButEmptyTitle(t *testing.T) {
+	s := NewServer(fakeBackend{})
+	cs := connectClient(t, s)
+	defer cs.Close()
+
+	resp, err := cs.CallTool(context.Background(), &sdk.CallToolParams{
+		Name: "update_page",
+		Arguments: map[string]any{
+			"page_id": "42",
+			"title":   "   ",
+		},
+	})
+	if err != nil {
+		t.Fatalf("call update_page: %v", err)
+	}
+	if !resp.IsError {
+		t.Fatalf("expected MCP error result for empty title")
+	}
+	if len(resp.Content) == 0 {
+		t.Fatalf("expected error content for empty title")
+	}
+	tc, ok := resp.Content[0].(*sdk.TextContent)
+	if !ok {
+		t.Fatalf("expected text content, got %T", resp.Content[0])
+	}
+	if !strings.Contains(tc.Text, "validation_error: title cannot be empty when provided") {
+		t.Fatalf("unexpected error: %s", tc.Text)
+	}
+}
+
+func TestUpdatePageRejectsPresentButEmptyBodyStorage(t *testing.T) {
+	s := NewServer(fakeBackend{})
+	cs := connectClient(t, s)
+	defer cs.Close()
+
+	resp, err := cs.CallTool(context.Background(), &sdk.CallToolParams{
+		Name: "update_page",
+		Arguments: map[string]any{
+			"page_id":      "42",
+			"body_storage": "   ",
+		},
+	})
+	if err != nil {
+		t.Fatalf("call update_page: %v", err)
+	}
+	if !resp.IsError {
+		t.Fatalf("expected MCP error result for empty body_storage")
+	}
+	if len(resp.Content) == 0 {
+		t.Fatalf("expected error content for empty body_storage")
+	}
+	tc, ok := resp.Content[0].(*sdk.TextContent)
+	if !ok {
+		t.Fatalf("expected text content, got %T", resp.Content[0])
+	}
+	if !strings.Contains(tc.Text, "validation_error: body_storage cannot be empty when provided") {
+		t.Fatalf("unexpected error: %s", tc.Text)
+	}
+}
+
+func TestUpdatePageHappyPath(t *testing.T) {
+	s := NewServer(fakeBackend{})
+	cs := connectClient(t, s)
+	defer cs.Close()
+
+	resp, err := cs.CallTool(context.Background(), &sdk.CallToolParams{
+		Name: "update_page",
+		Arguments: map[string]any{
+			"page_id":      " 42 ",
+			"title":        "  New Title  ",
+			"body_storage": "  <p>Updated body</p>  ",
+		},
+	})
+	if err != nil {
+		t.Fatalf("call update_page: %v", err)
+	}
+	if resp.IsError {
+		t.Fatalf("expected successful update_page response")
+	}
+	raw, _ := json.Marshal(resp.StructuredContent)
+	if !strings.Contains(string(raw), "\"page_id\":\"42\"") {
+		t.Fatalf("expected page_id in structured payload: %s", string(raw))
+	}
+	if !strings.Contains(string(raw), "\"title\":\"New Title\"") {
+		t.Fatalf("expected trimmed title in structured payload: %s", string(raw))
+	}
+}
+
+func TestCreateChildPageRejectsMarkdownBodyStorage(t *testing.T) {
+	s := NewServer(fakeBackend{})
+	cs := connectClient(t, s)
+	defer cs.Close()
+
+	resp, err := cs.CallTool(context.Background(), &sdk.CallToolParams{
+		Name: "create_child_page",
+		Arguments: map[string]any{
+			"parent_page_id": "42",
+			"title":          "Child",
+			"body_storage":   "# Heading",
+		},
+	})
+	if err != nil {
+		t.Fatalf("call create_child_page: %v", err)
+	}
+	if !resp.IsError {
+		t.Fatalf("expected MCP error result for markdown body_storage")
+	}
+	if len(resp.Content) == 0 {
+		t.Fatalf("expected error content for markdown body_storage")
+	}
+	tc, ok := resp.Content[0].(*sdk.TextContent)
+	if !ok {
+		t.Fatalf("expected text content, got %T", resp.Content[0])
+	}
+	if !strings.Contains(tc.Text, "validation_error: body_storage must be Confluence storage XHTML") {
+		t.Fatalf("unexpected error: %s", tc.Text)
+	}
+}
+
+func TestCreateChildPageRejectsPresentButEmptyBodyStorage(t *testing.T) {
+	s := NewServer(fakeBackend{})
+	cs := connectClient(t, s)
+	defer cs.Close()
+
+	resp, err := cs.CallTool(context.Background(), &sdk.CallToolParams{
+		Name: "create_child_page",
+		Arguments: map[string]any{
+			"parent_page_id": "42",
+			"title":          "Child",
+			"body_storage":   "   ",
+		},
+	})
+	if err != nil {
+		t.Fatalf("call create_child_page: %v", err)
+	}
+	if !resp.IsError {
+		t.Fatalf("expected MCP error result for empty body_storage")
+	}
+	if len(resp.Content) == 0 {
+		t.Fatalf("expected error content for empty body_storage")
+	}
+	tc, ok := resp.Content[0].(*sdk.TextContent)
+	if !ok {
+		t.Fatalf("expected text content, got %T", resp.Content[0])
+	}
+	if !strings.Contains(tc.Text, "validation_error: body_storage cannot be empty after trimming") {
+		t.Fatalf("unexpected error: %s", tc.Text)
+	}
+}
+
+func TestCreateChildPageRejectsMissingParentPageID(t *testing.T) {
+	s := NewServer(fakeBackend{})
+	cs := connectClient(t, s)
+	defer cs.Close()
+
+	resp, err := cs.CallTool(context.Background(), &sdk.CallToolParams{
+		Name: "create_child_page",
+		Arguments: map[string]any{
+			"title":        "Child",
+			"body_storage": "<p>Child body</p>",
+		},
+	})
+	if err != nil {
+		t.Fatalf("call create_child_page: %v", err)
+	}
+	if !resp.IsError {
+		t.Fatalf("expected MCP error result for missing parent_page_id")
+	}
+	if len(resp.Content) == 0 {
+		t.Fatalf("expected error content for missing parent_page_id")
+	}
+	tc, ok := resp.Content[0].(*sdk.TextContent)
+	if !ok {
+		t.Fatalf("expected text content, got %T", resp.Content[0])
+	}
+	if !strings.Contains(tc.Text, "missing properties") || !strings.Contains(tc.Text, "\"parent_page_id\"") {
+		t.Fatalf("unexpected error: %s", tc.Text)
+	}
+}
+
+func TestCreateChildPageRejectsEmptyParentPageID(t *testing.T) {
+	s := NewServer(fakeBackend{})
+	cs := connectClient(t, s)
+	defer cs.Close()
+
+	resp, err := cs.CallTool(context.Background(), &sdk.CallToolParams{
+		Name: "create_child_page",
+		Arguments: map[string]any{
+			"parent_page_id": "   ",
+			"title":          "Child",
+			"body_storage":   "<p>Child body</p>",
+		},
+	})
+	if err != nil {
+		t.Fatalf("call create_child_page: %v", err)
+	}
+	if !resp.IsError {
+		t.Fatalf("expected MCP error result for empty parent_page_id")
+	}
+	if len(resp.Content) == 0 {
+		t.Fatalf("expected error content for empty parent_page_id")
+	}
+	tc, ok := resp.Content[0].(*sdk.TextContent)
+	if !ok {
+		t.Fatalf("expected text content, got %T", resp.Content[0])
+	}
+	if !strings.Contains(tc.Text, "validation_error: parent_page_id is required") {
+		t.Fatalf("unexpected error: %s", tc.Text)
+	}
+}
+
+func TestCreateChildPageHappyPath(t *testing.T) {
+	s := NewServer(fakeBackend{})
+	cs := connectClient(t, s)
+	defer cs.Close()
+
+	resp, err := cs.CallTool(context.Background(), &sdk.CallToolParams{
+		Name: "create_child_page",
+		Arguments: map[string]any{
+			"parent_page_id": " 42 ",
+			"title":          "  Child page  ",
+			"body_storage":   "  <p>Child body</p>  ",
+		},
+	})
+	if err != nil {
+		t.Fatalf("call create_child_page: %v", err)
+	}
+	if resp.IsError {
+		t.Fatalf("expected successful create_child_page response")
+	}
+	raw, _ := json.Marshal(resp.StructuredContent)
+	if !strings.Contains(string(raw), "\"page_id\":\"100\"") {
+		t.Fatalf("expected page_id in structured payload: %s", string(raw))
+	}
+	if !strings.Contains(string(raw), "\"parent_page_id\":\"42\"") {
+		t.Fatalf("expected trimmed parent_page_id in structured payload: %s", string(raw))
+	}
+	if !strings.Contains(string(raw), "\"title\":\"Child page\"") {
+		t.Fatalf("expected trimmed title in structured payload: %s", string(raw))
 	}
 }
 

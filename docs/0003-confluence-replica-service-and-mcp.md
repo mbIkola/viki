@@ -15,15 +15,15 @@
 2. Агентский контур (`confluence-replica-mcp` facade):
    - отдельный бинарь `cmd/mcp`;
    - реализован через `modelcontextprotocol/go-sdk`;
-   - публикует retrieval-only интерфейс:
-     - tools: `search`, `ask`, `get_tree`, `what_changed`
+   - публикует read-first интерфейс с guardrail-ами на запись:
+     - tools: `search`, `ask`, `get_tree`, `what_changed`, `update_page`, `create_child_page`
      - resource templates: `confluence://page/{page_id}`, `confluence://chunk/{chunk_id}`, `confluence://digest/{date}`
      - prompts: `daily_brief`, `investigate_page`, `compare_versions`
 
 Принцип границы:
 
 - HTTP API (`cmd/api`) остается внутренним API для runtime и ops.
-- MCP не зеркалит весь REST; это узкий интерфейс для агентного доступа к уже проиндексированному знанию.
+- MCP не зеркалит весь REST; это узкий интерфейс для агентного доступа к локальному индексу и ограниченных page write-операций.
 
 ```mermaid
 flowchart LR
@@ -74,6 +74,14 @@ flowchart LR
 - MCP можно запускать в local-only режиме без Confluence PAT:
   - `cmd/mcp` загружает конфиг с `RequireConfluenceToken=false`
   - если в конфиге `keychain://...`, MCP не падает из-за секрета и работает только по локальной реплике
+
+- MCP write tools защищены флагом и сразу обновляют локальный индекс:
+  - `mcp.write_enabled=false` по умолчанию; при выключенном флаге запись возвращает `write_disabled`
+  - `update_page` требует `page_id` и хотя бы одно из `title`/`body_storage`; MCP делает лёгкую pre-validation входа и при явной невалидности возвращает `validation_error`
+  - `body_storage` для `update_page`/`create_child_page` ожидается в формате Confluence storage XHTML, но проверка в MCP эвристическая; строгая валидация выполняется Confluence API
+  - при успешном `update_page` / `create_child_page` страница сразу upsert-ится в локальную реплику (для child page дополнительно refresh/upsert родителя)
+  - если upstream применился, но локальный refresh не завершился, возвращается `local_refresh_failed` чтобы агент не считал локальный state консистентным
+  - ошибки write surface отдаются как MCP tool-call errors с token-ами в message: `write_disabled`, `local_refresh_failed`, `version_conflict`, `auth_error`, `upstream_error`
 
 - Sync roots задаются через `confluence.parent_ids`:
   - `bootstrap` и `sync` без override используют полный scope из конфига

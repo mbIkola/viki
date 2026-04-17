@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -86,6 +87,27 @@ type ChangeQuery struct {
 	Limit    int
 }
 
+type UpdatePageRequest struct {
+	PageID      string  `json:"page_id"`
+	Title       *string `json:"title,omitempty"`
+	BodyStorage *string `json:"body_storage,omitempty"`
+}
+
+type CreateChildPageRequest struct {
+	ParentPageID string `json:"parent_page_id"`
+	Title        string `json:"title"`
+	BodyStorage  string `json:"body_storage"`
+}
+
+type PageMutationResult struct {
+	PageID       string `json:"page_id"`
+	Title        string `json:"title"`
+	ParentPageID string `json:"parent_page_id,omitempty"`
+	Version      int    `json:"version"`
+	SpaceKey     string `json:"space_key,omitempty"`
+	PageURI      string `json:"page_uri,omitempty"`
+}
+
 type ChangeRecord struct {
 	RunID                  int64     `json:"run_id"`
 	PageID                 string    `json:"page_id"`
@@ -142,6 +164,8 @@ type Backend interface {
 	GetDigest(ctx context.Context, date time.Time) (DigestDoc, error)
 	GetTree(ctx context.Context, rootPageID string, depth int, limit int) ([]TreeNode, error)
 	GetChanges(ctx context.Context, query ChangeQuery) ([]ChangeRecord, error)
+	UpdatePage(ctx context.Context, req UpdatePageRequest) (PageMutationResult, error)
+	CreateChildPage(ctx context.Context, req CreateChildPageRequest) (PageMutationResult, error)
 }
 
 type Server struct {
@@ -173,6 +197,22 @@ type getTreeInput struct {
 type getTreeOutput struct {
 	Nodes []TreeNode `json:"nodes"`
 }
+
+type updatePageInput struct {
+	PageID      string  `json:"page_id" jsonschema:"target page id"`
+	Title       *string `json:"title,omitempty" jsonschema:"optional new title"`
+	BodyStorage *string `json:"body_storage,omitempty" jsonschema:"optional Confluence storage XHTML body"`
+}
+
+type createChildPageInput struct {
+	ParentPageID string `json:"parent_page_id" jsonschema:"parent page id"`
+	Title        string `json:"title" jsonschema:"title for the new child page"`
+	BodyStorage  string `json:"body_storage" jsonschema:"Confluence storage XHTML body for the new page"`
+}
+
+var (
+	storageTagRE = regexp.MustCompile(`(?is)<\s*(?:ac:|ri:)?[a-z][a-z0-9:_-]*(?:\s+[^>]*)?>`)
+)
 
 func NewServer(backend Backend) *Server {
 	s := &Server{
@@ -216,6 +256,16 @@ func (s *Server) registerTools() {
 		Name:        "what_changed",
 		Description: "Return structured history of what changed from local sync diffs.",
 	}, s.whatChangedTool)
+
+	sdk.AddTool(s.sdk, &sdk.Tool{
+		Name:        "update_page",
+		Description: "Update an existing Confluence page title and/or storage body.",
+	}, s.updatePageTool)
+
+	sdk.AddTool(s.sdk, &sdk.Tool{
+		Name:        "create_child_page",
+		Description: "Create a child page under a parent page using storage body format.",
+	}, s.createChildPageTool)
 }
 
 func (s *Server) registerResources() {
@@ -379,6 +429,89 @@ func (s *Server) whatChangedTool(ctx context.Context, _ *sdk.CallToolRequest, in
 		out = append(out, row)
 	}
 	return nil, whatChangedOutput{Changes: out}, nil
+}
+
+func (s *Server) updatePageTool(ctx context.Context, _ *sdk.CallToolRequest, in updatePageInput) (*sdk.CallToolResult, PageMutationResult, error) {
+	pageID := strings.TrimSpace(in.PageID)
+	if pageID == "" {
+		return nil, PageMutationResult{}, errors.New("validation_error: page_id is required")
+	}
+
+	var title *string
+	if in.Title != nil {
+		trimmed := strings.TrimSpace(*in.Title)
+		if trimmed == "" {
+			return nil, PageMutationResult{}, errors.New("validation_error: title cannot be empty when provided")
+		}
+		title = &trimmed
+	}
+
+	var bodyStorage *string
+	if in.BodyStorage != nil {
+		trimmed := strings.TrimSpace(*in.BodyStorage)
+		if trimmed == "" {
+			return nil, PageMutationResult{}, errors.New("validation_error: body_storage cannot be empty when provided")
+		}
+		if err := validateStorageBody(trimmed); err != nil {
+			return nil, PageMutationResult{}, err
+		}
+		bodyStorage = &trimmed
+	}
+
+	if title == nil && bodyStorage == nil {
+		return nil, PageMutationResult{}, errors.New("validation_error: at least one of title or body_storage is required")
+	}
+
+	out, err := s.backend.UpdatePage(ctx, UpdatePageRequest{
+		PageID:      pageID,
+		Title:       title,
+		BodyStorage: bodyStorage,
+	})
+	if err != nil {
+		return nil, PageMutationResult{}, err
+	}
+	return nil, out, nil
+}
+
+func (s *Server) createChildPageTool(ctx context.Context, _ *sdk.CallToolRequest, in createChildPageInput) (*sdk.CallToolResult, PageMutationResult, error) {
+	parentPageID := strings.TrimSpace(in.ParentPageID)
+	if parentPageID == "" {
+		return nil, PageMutationResult{}, errors.New("validation_error: parent_page_id is required")
+	}
+	title := strings.TrimSpace(in.Title)
+	if title == "" {
+		return nil, PageMutationResult{}, errors.New("validation_error: title cannot be empty after trimming")
+	}
+	bodyStorage := strings.TrimSpace(in.BodyStorage)
+	if bodyStorage == "" {
+		return nil, PageMutationResult{}, errors.New("validation_error: body_storage cannot be empty after trimming")
+	}
+	if err := validateStorageBody(bodyStorage); err != nil {
+		return nil, PageMutationResult{}, err
+	}
+
+	out, err := s.backend.CreateChildPage(ctx, CreateChildPageRequest{
+		ParentPageID: parentPageID,
+		Title:        title,
+		BodyStorage:  bodyStorage,
+	})
+	if err != nil {
+		return nil, PageMutationResult{}, err
+	}
+	return nil, out, nil
+}
+
+func validateStorageBody(body string) error {
+	trimmed := strings.TrimSpace(body)
+	if trimmed == "" {
+		return errors.New("validation_error: body_storage is required")
+	}
+	// Heuristic check only: require XHTML-like storage content with visible tags.
+	// We intentionally avoid strict parsing and avoid aggressive markdown detection.
+	if !storageTagRE.MatchString(trimmed) {
+		return errors.New("validation_error: body_storage must be Confluence storage XHTML (expected XML-like tags such as <p>...</p>)")
+	}
+	return nil
 }
 
 func changeReasons(c ChangeRecord) []string {

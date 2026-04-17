@@ -69,6 +69,67 @@ confluence:
 	}
 }
 
+func TestLoadConfigWithOptionsMCPWriteEnabledRequiresToken(t *testing.T) {
+	cfgPath := writeTestConfig(t, `
+mcp:
+  write_enabled: true
+confluence:
+  base_url: "https://example.atlassian.net"
+  parent_ids: ["10"]
+`)
+	_, err := LoadConfigWithOptions(cfgPath, LoadOptions{
+		RequireParentIDs:       true,
+		RequireConfluenceToken: false,
+	})
+	if err == nil || !strings.Contains(err.Error(), "mcp.write_enabled requires confluence token") {
+		t.Fatalf("expected MCP write token error, got: %v", err)
+	}
+}
+
+func TestLoadConfigWithOptionsMCPWriteEnabledRequiresBaseURL(t *testing.T) {
+	cfgPath := writeTestConfig(t, `
+mcp:
+  write_enabled: true
+confluence:
+  base_url: "   "
+  token: "plain-token"
+  parent_ids: ["10"]
+`)
+	_, err := LoadConfigWithOptions(cfgPath, LoadOptions{
+		RequireParentIDs:       true,
+		RequireConfluenceToken: false,
+	})
+	if err == nil || !strings.Contains(err.Error(), "mcp.write_enabled=true requires confluence.base_url") {
+		t.Fatalf("expected MCP write base_url error, got: %v", err)
+	}
+}
+
+func TestLoadConfigWithOptionsMCPWriteEnabledResolvesKeychain(t *testing.T) {
+	defer func(orig func(...string) ([]byte, error)) { securityExec = orig }(securityExec)
+	securityExec = func(args ...string) ([]byte, error) {
+		return []byte("resolved-token"), nil
+	}
+
+	cfgPath := writeTestConfig(t, `
+mcp:
+  write_enabled: true
+confluence:
+  base_url: "https://example.atlassian.net"
+  token: "keychain://mcp-test"
+  parent_ids: ["10"]
+`)
+	cfg, err := LoadConfigWithOptions(cfgPath, LoadOptions{
+		RequireParentIDs:       true,
+		RequireConfluenceToken: false,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Confluence.Token != "resolved-token" {
+		t.Fatalf("expected resolved token, got: %q", cfg.Confluence.Token)
+	}
+}
+
 func TestLoadConfigWithOptionsDefaultsDatabasePath(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
