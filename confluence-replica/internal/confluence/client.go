@@ -1,8 +1,10 @@
 package confluence
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -73,6 +75,26 @@ type Metadata struct {
 			Name string `json:"name"`
 		} `json:"results"`
 	} `json:"labels"`
+}
+
+type HTTPError struct {
+	Method string
+	URL    string
+	Status int
+	Body   string
+}
+
+func (he HTTPError) Error() string {
+	body := strings.TrimSpace(he.Body)
+	if body == "" {
+		body = "(no body)"
+	}
+	return fmt.Sprintf("confluence http %d %s %s: %s", he.Status, he.Method, he.URL, body)
+}
+
+func IsVersionConflict(err error) bool {
+	var httpErr HTTPError
+	return errors.As(err, &httpErr) && httpErr.Status == http.StatusConflict
 }
 
 type childResponse struct {
@@ -150,10 +172,112 @@ func (c *Client) WalkTree(ctx context.Context, parentID string) ([]Page, error) 
 	return out, nil
 }
 
-func (c *Client) get(ctx context.Context, u string, out any) error {
+func (c *Client) UpdatePage(ctx context.Context, pageID, title, bodyStorage, versionMessage string) (Page, error) {
+	makePayload := func(current Page) map[string]any {
+		version := map[string]any{
+			"number": current.Version.Number + 1,
+		}
+		if versionMessage != "" {
+			version["message"] = versionMessage
+		}
+
+		storageValue := current.Body.Storage.Value
+		if bodyStorage != "" {
+			storageValue = bodyStorage
+		}
+
+		titleValue := current.Title
+		if title != "" {
+			titleValue = title
+		}
+
+		return map[string]any{
+			"id":      pageID,
+			"type":    "page",
+			"version": version,
+			"title":   titleValue,
+			"body": map[string]any{
+				"storage": map[string]any{
+					"value":          storageValue,
+					"representation": "storage",
+				},
+			},
+		}
+	}
+
+	current, err := c.GetPage(ctx, pageID)
+	if err != nil {
+		return Page{}, err
+	}
+	payload := makePayload(current)
+	var lastErr error
+	putURL := c.baseURL + "/rest/api/content/" + pageID
+	for attempt := 0; attempt < 2; attempt++ {
+		lastErr = c.doJSON(ctx, http.MethodPut, putURL, payload, nil)
+		if lastErr == nil {
+			return c.GetPage(ctx, pageID)
+		}
+		if !IsVersionConflict(lastErr) || attempt == 1 {
+			return Page{}, lastErr
+		}
+		current, err = c.GetPage(ctx, pageID)
+		if err != nil {
+			return Page{}, err
+		}
+		payload = makePayload(current)
+	}
+	return Page{}, lastErr
+}
+
+func (c *Client) CreateChildPage(ctx context.Context, parentPageID, title, bodyStorage, versionMessage string) (Page, error) {
+	parent, err := c.GetPage(ctx, parentPageID)
+	if err != nil {
+		return Page{}, err
+	}
+
+	payload := map[string]any{
+		"type":  "page",
+		"title": title,
+		"ancestors": []map[string]string{
+			{"id": parentPageID},
+		},
+		"space": map[string]string{
+			"key": parent.Space.Key,
+		},
+		"body": map[string]any{
+			"storage": map[string]any{
+				"value":          bodyStorage,
+				"representation": "storage",
+			},
+		},
+		"version": map[string]any{
+			"number": 1,
+		},
+	}
+	if versionMessage != "" {
+		payload["version"].(map[string]any)["message"] = versionMessage
+	}
+
+	var created Page
+	if err := c.doJSON(ctx, http.MethodPost, c.baseURL+"/rest/api/content", payload, &created); err != nil {
+		return Page{}, err
+	}
+	return c.GetPage(ctx, created.ID)
+}
+
+func (c *Client) doJSON(ctx context.Context, method, u string, payload any, out any) error {
 	started := time.Now()
-	logx.Debugf("[confluence] request method=GET url=%s", u)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	var body io.Reader
+	if payload != nil {
+		buf := bytes.NewBuffer(nil)
+		if err := json.NewEncoder(buf).Encode(payload); err != nil {
+			return err
+		}
+		body = buf
+	}
+
+	logx.Debugf("[confluence] request method=%s url=%s", method, u)
+	req, err := http.NewRequestWithContext(ctx, method, u, body)
 	if err != nil {
 		return err
 	}
@@ -161,6 +285,9 @@ func (c *Client) get(ctx context.Context, u string, out any) error {
 		req.Header.Set("Authorization", "Bearer "+c.token)
 	}
 	req.Header.Set("Accept", "application/json")
+	if payload != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -169,9 +296,22 @@ func (c *Client) get(ctx context.Context, u string, out any) error {
 	}
 	defer resp.Body.Close()
 	logx.Debugf("[confluence] response url=%s status=%d duration_ms=%d", u, resp.StatusCode, time.Since(started).Milliseconds())
+
 	if resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 8*1024))
-		return fmt.Errorf("confluence http %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 8*1024))
+		return HTTPError{
+			Method: method,
+			URL:    u,
+			Status: resp.StatusCode,
+			Body:   strings.TrimSpace(string(bodyBytes)),
+		}
 	}
-	return json.NewDecoder(resp.Body).Decode(out)
+	if out != nil {
+		return json.NewDecoder(resp.Body).Decode(out)
+	}
+	return nil
+}
+
+func (c *Client) get(ctx context.Context, u string, out any) error {
+	return c.doJSON(ctx, http.MethodGet, u, nil, out)
 }
