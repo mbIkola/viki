@@ -18,7 +18,7 @@ No Postgres. No pgvector. No Docker in the happy path.
   - HTTP API in `cmd/api` for internal service and ops flows
 - Agent facade:
   - MCP server in `cmd/mcp` over stdio
-  - retrieval-only surface for indexed knowledge
+  - read-first surface for indexed knowledge, plus guarded Confluence write tools
 
 Search behavior:
 
@@ -184,6 +184,13 @@ Tools:
 - `ask(query, top_k=8)`
 - `get_tree(root_page_id, depth=2, limit=200)`
 - `what_changed(date?, run_id?, parent_id?, limit=50, include_excerpts=true)`
+- `update_page(page_id, title?, body_storage?)`
+- `create_child_page(parent_page_id, title, body_storage)`
+
+Write safety:
+
+- `mcp.write_enabled` defaults to `false`
+- when write tools are disabled, MCP returns `write_disabled`
 
 Prompts:
 

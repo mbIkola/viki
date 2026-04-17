@@ -29,7 +29,14 @@ func TestMCPBinarySmoke(t *testing.T) {
 		t.Fatalf("probe mcp binary smoke: %v", err)
 	}
 
-	assertSameMembers(t, "tools", got.Tools, []string{"search", "ask", "get_tree", "what_changed"})
+	assertSameMembers(t, "tools", got.Tools, []string{
+		"search",
+		"ask",
+		"get_tree",
+		"what_changed",
+		"update_page",
+		"create_child_page",
+	})
 	assertSameMembers(t, "prompts", got.Prompts, []string{"daily_brief", "investigate_page", "compare_versions"})
 	assertSameMembers(t, "resource templates", got.Templates, []string{
 		"confluence://page/{page_id}",
