@@ -98,6 +98,27 @@ func (f fakeBackend) GetChanges(_ context.Context, query ChangeQuery) ([]ChangeR
 	}, nil
 }
 
+func (f fakeBackend) UpdatePage(_ context.Context, req UpdatePageRequest) (PageMutationResult, error) {
+	title := "Runbook"
+	if req.Title != nil {
+		title = *req.Title
+	}
+	return PageMutationResult{
+		PageID:  req.PageID,
+		Title:   title,
+		Version: 8,
+	}, nil
+}
+
+func (f fakeBackend) CreateChildPage(_ context.Context, req CreateChildPageRequest) (PageMutationResult, error) {
+	return PageMutationResult{
+		PageID:       "100",
+		Title:        req.Title,
+		ParentPageID: req.ParentPageID,
+		Version:      1,
+	}, nil
+}
+
 func connectClient(t *testing.T, s *Server) *sdk.ClientSession {
 	t.Helper()
 	ctx := context.Background()
@@ -125,7 +146,7 @@ func TestSearchToolExposedAndCallable(t *testing.T) {
 		}
 		toolNames[tool.Name] = true
 	}
-	for _, expected := range []string{"search", "ask", "get_tree", "what_changed"} {
+	for _, expected := range []string{"search", "ask", "get_tree", "what_changed", "update_page", "create_child_page"} {
 		if !toolNames[expected] {
 			t.Fatalf("expected tool %q to be listed", expected)
 		}
@@ -151,6 +172,58 @@ func TestSearchToolExposedAndCallable(t *testing.T) {
 	raw, _ := json.Marshal(resp.StructuredContent)
 	if !strings.Contains(string(raw), "\"page_id\":\"42\"") {
 		t.Fatalf("expected structured hit payload: %s", string(raw))
+	}
+}
+
+func TestUpdatePageRejectsMissingPatchFields(t *testing.T) {
+	s := NewServer(fakeBackend{})
+	cs := connectClient(t, s)
+	defer cs.Close()
+
+	resp, err := cs.CallTool(context.Background(), &sdk.CallToolParams{
+		Name:      "update_page",
+		Arguments: map[string]any{"page_id": "42"},
+	})
+	if err != nil {
+		t.Fatalf("call update_page: %v", err)
+	}
+	if !resp.IsError {
+		t.Fatalf("expected MCP error result for missing patch fields")
+	}
+	tc, ok := resp.Content[0].(*sdk.TextContent)
+	if !ok {
+		t.Fatalf("expected text content, got %T", resp.Content[0])
+	}
+	if !strings.Contains(tc.Text, "validation_error: at least one of title or body_storage is required") {
+		t.Fatalf("unexpected error: %s", tc.Text)
+	}
+}
+
+func TestCreateChildPageRejectsMarkdownBodyStorage(t *testing.T) {
+	s := NewServer(fakeBackend{})
+	cs := connectClient(t, s)
+	defer cs.Close()
+
+	resp, err := cs.CallTool(context.Background(), &sdk.CallToolParams{
+		Name: "create_child_page",
+		Arguments: map[string]any{
+			"parent_page_id": "42",
+			"title":          "Child",
+			"body_storage":   "# Heading",
+		},
+	})
+	if err != nil {
+		t.Fatalf("call create_child_page: %v", err)
+	}
+	if !resp.IsError {
+		t.Fatalf("expected MCP error result for markdown body_storage")
+	}
+	tc, ok := resp.Content[0].(*sdk.TextContent)
+	if !ok {
+		t.Fatalf("expected text content, got %T", resp.Content[0])
+	}
+	if !strings.Contains(tc.Text, "validation_error: body_storage must be Confluence storage XHTML") {
+		t.Fatalf("unexpected error: %s", tc.Text)
 	}
 }
 
