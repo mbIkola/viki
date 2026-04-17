@@ -91,7 +91,7 @@ func LoadConfigWithOptions(path string, opts LoadOptions) (Config, error) {
 	if cfg.MCP.WriteEnabled {
 		cfg.Confluence.Token, err = resolveSecretRef(cfg.Confluence.Token)
 		if err != nil {
-			return Config{}, fmt.Errorf("resolve confluence token: %w", err)
+			return Config{}, fmt.Errorf("mcp write mode: resolve confluence token: %w", err)
 		}
 		if cfg.Confluence.Token == "" {
 			return Config{}, fmt.Errorf("mcp.write_enabled requires confluence token")
