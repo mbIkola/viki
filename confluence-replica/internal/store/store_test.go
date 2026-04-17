@@ -297,10 +297,11 @@ func TestSQLiteStoreDigestTreeAndDiffQueries(t *testing.T) {
 		t.Fatalf("unexpected child upsert error: %v", err)
 	}
 
-	if err := st.SaveDigest(ctx, time.Date(2026, 4, 12, 0, 0, 0, 0, time.UTC), "# Digest", map[string]any{"total": 1}); err != nil {
+	digestDay := time.Date(2026, 4, 12, 0, 0, 0, 0, time.UTC)
+	if err := st.SaveDigest(ctx, digestDay, "# Digest", map[string]any{"total": 1}); err != nil {
 		t.Fatalf("unexpected save digest error: %v", err)
 	}
-	digest, err := st.GetDigest(ctx, time.Date(2026, 4, 12, 0, 0, 0, 0, time.UTC))
+	digest, err := st.GetDigest(ctx, digestDay)
 	if err != nil {
 		t.Fatalf("unexpected get digest error: %v", err)
 	}
@@ -322,7 +323,6 @@ func TestSQLiteStoreDigestTreeAndDiffQueries(t *testing.T) {
 	}}); err != nil {
 		t.Fatalf("unexpected change event insert error: %v", err)
 	}
-	day := time.Date(2026, 4, 12, 0, 0, 0, 0, time.UTC)
 	if err := st.InsertPageChangeDiffs(ctx, []PageChangeDiff{{
 		RunID:           runID,
 		PageID:          "child",
@@ -342,6 +342,15 @@ func TestSQLiteStoreDigestTreeAndDiffQueries(t *testing.T) {
 	if err := st.FinishSyncRun(ctx, runID, "success", map[string]any{"pages": 2}); err != nil {
 		t.Fatalf("unexpected finish sync error: %v", err)
 	}
+	var eventCreatedAt string
+	if err := st.db.QueryRowContext(ctx, `SELECT created_at FROM change_events WHERE run_id = ? ORDER BY event_id DESC LIMIT 1`, runID).Scan(&eventCreatedAt); err != nil {
+		t.Fatalf("unexpected created_at read error: %v", err)
+	}
+	day := mustParseTime(eventCreatedAt)
+	if day.IsZero() {
+		t.Fatalf("expected non-zero created_at parse result, raw=%q", eventCreatedAt)
+	}
+	day = time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, time.UTC)
 
 	events, err := st.ListChangeEventsForDate(ctx, day)
 	if err != nil {
