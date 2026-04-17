@@ -25,3 +25,6 @@ cover.out
 *.swp
 *.swo
 *~
+
+# Local git worktrees
+.worktrees/
