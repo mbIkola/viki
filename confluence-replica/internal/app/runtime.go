@@ -28,6 +28,9 @@ type Config struct {
 	Database struct {
 		Path string `yaml:"path"`
 	} `yaml:"database"`
+	MCP struct {
+		WriteEnabled bool `yaml:"write_enabled"`
+	} `yaml:"mcp"`
 	Confluence struct {
 		BaseURL    string   `yaml:"base_url"`
 		Token      string   `yaml:"token"`
@@ -85,7 +88,15 @@ func LoadConfigWithOptions(path string, opts LoadOptions) (Config, error) {
 	if cfg.Confluence.Token == "" {
 		cfg.Confluence.Token = os.Getenv("CONFLUENCE_PAT")
 	}
-	if opts.RequireConfluenceToken {
+	if cfg.MCP.WriteEnabled {
+		cfg.Confluence.Token, err = resolveSecretRef(cfg.Confluence.Token)
+		if err != nil {
+			return Config{}, fmt.Errorf("resolve confluence token: %w", err)
+		}
+		if cfg.Confluence.Token == "" {
+			return Config{}, fmt.Errorf("mcp.write_enabled requires confluence token")
+		}
+	} else if opts.RequireConfluenceToken {
 		cfg.Confluence.Token, err = resolveSecretRef(cfg.Confluence.Token)
 		if err != nil {
 			return Config{}, fmt.Errorf("resolve confluence token: %w", err)
