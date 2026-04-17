@@ -6,26 +6,41 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 )
 
 func TestUpdatePage_RetriesOnConflict(t *testing.T) {
 	state := struct {
-		attempt int
-		version int
-	}{version: 1}
+		putCount         int
+		conflictVersion  int
+		refreshedVersion int
+		secondPutVersion int
+	}{
+		conflictVersion:  1,
+		refreshedVersion: 10,
+	}
 
 	client := NewClient("http://example.invalid", "", time.Second)
 	client.httpClient = &http.Client{
 		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			switch {
 			case req.Method == http.MethodGet && req.URL.Path == "/rest/api/content/p":
+				var version int
+				switch {
+				case state.putCount == 0:
+					version = state.conflictVersion
+				case state.putCount == 1:
+					version = state.refreshedVersion
+				default:
+					version = state.secondPutVersion
+				}
 				page := Page{
 					ID:    "p",
 					Title: "t",
 					Version: Version{
-						Number: state.version,
+						Number: version,
 					},
 					Body: Body{
 						Storage: struct {
@@ -40,15 +55,32 @@ func TestUpdatePage_RetriesOnConflict(t *testing.T) {
 				}
 				return jsonResponse(http.StatusOK, page), nil
 			case req.Method == http.MethodPut && req.URL.Path == "/rest/api/content/p":
-				state.attempt++
-				if state.attempt == 1 {
+				state.putCount++
+				var payload map[string]any
+				if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
+					t.Fatalf("decode put payload: %v", err)
+				}
+				versionMap, ok := payload["version"].(map[string]any)
+				if !ok {
+					t.Fatalf("missing version object")
+				}
+				versionNumber := int(versionMap["number"].(float64))
+				if state.putCount == 1 {
+					expected := state.conflictVersion + 1
+					if versionNumber != expected {
+						t.Fatalf("first put version=%d want=%d", versionNumber, expected)
+					}
 					return &http.Response{
 						StatusCode: http.StatusConflict,
-						Body:       io.NopCloser(bytes.NewBufferString("conflict")),
+						Body:       io.NopCloser(strings.NewReader("conflict")),
 						Header:     http.Header{"Content-Type": {"text/plain"}},
 					}, nil
 				}
-				state.version++
+				expected := state.refreshedVersion + 1
+				if versionNumber != expected {
+					t.Fatalf("second put version=%d want=%d", versionNumber, expected)
+				}
+				state.secondPutVersion = versionNumber
 				return jsonResponse(http.StatusOK, struct{}{}), nil
 			default:
 				t.Fatalf("unexpected request %s %s", req.Method, req.URL.Path)
@@ -61,7 +93,7 @@ func TestUpdatePage_RetriesOnConflict(t *testing.T) {
 	if err != nil {
 		t.Fatalf("update page: %v", err)
 	}
-	if updated.Version.Number != 2 {
+	if updated.Version.Number != state.secondPutVersion {
 		t.Fatalf("version=%d", updated.Version.Number)
 	}
 }
@@ -80,9 +112,19 @@ func TestCreateChildPage_IncludesParent(t *testing.T) {
 				if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
 					t.Fatalf("decode payload: %v", err)
 				}
-				space := payload["space"].(map[string]any)
-				if space["key"] != "XYZ" {
-					t.Fatalf("space=%v", space)
+				if payload["title"] != "child" {
+					t.Fatalf("title=%v", payload["title"])
+				}
+				body := payload["body"].(map[string]any)
+				storage := body["storage"].(map[string]any)
+				if storage["value"] != "body" {
+					t.Fatalf("storage value=%v", storage["value"])
+				}
+				if storage["representation"] != "storage" {
+					t.Fatalf("storage repr=%v", storage["representation"])
+				}
+				if payload["space"].(map[string]any)["key"] != "XYZ" {
+					t.Fatalf("space=%v", payload["space"])
 				}
 				ancestors := payload["ancestors"].([]any)
 				if len(ancestors) != 1 {
@@ -121,10 +163,9 @@ func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 
 func jsonResponse(status int, payload any) *http.Response {
 	b, _ := json.Marshal(payload)
-	resp := &http.Response{
+	return &http.Response{
 		StatusCode: status,
 		Body:       io.NopCloser(bytes.NewReader(b)),
 		Header:     http.Header{"Content-Type": {"application/json"}},
 	}
-	return resp
 }

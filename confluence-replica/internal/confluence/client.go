@@ -93,7 +93,7 @@ func (he HTTPError) Error() string {
 }
 
 func IsVersionConflict(err error) bool {
-	var httpErr HTTPError
+	var httpErr *HTTPError
 	return errors.As(err, &httpErr) && httpErr.Status == http.StatusConflict
 }
 
@@ -230,6 +230,13 @@ func (c *Client) UpdatePage(ctx context.Context, pageID, title, bodyStorage, ver
 }
 
 func (c *Client) CreateChildPage(ctx context.Context, parentPageID, title, bodyStorage, versionMessage string) (Page, error) {
+	if strings.TrimSpace(title) == "" {
+		return Page{}, fmt.Errorf("title is required")
+	}
+	if strings.TrimSpace(bodyStorage) == "" {
+		return Page{}, fmt.Errorf("bodyStorage is required")
+	}
+
 	parent, err := c.GetPage(ctx, parentPageID)
 	if err != nil {
 		return Page{}, err
@@ -299,7 +306,7 @@ func (c *Client) doJSON(ctx context.Context, method, u string, payload any, out 
 
 	if resp.StatusCode >= 300 {
 		bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 8*1024))
-		return HTTPError{
+		return &HTTPError{
 			Method: method,
 			URL:    u,
 			Status: resp.StatusCode,
@@ -309,6 +316,7 @@ func (c *Client) doJSON(ctx context.Context, method, u string, payload any, out 
 	if out != nil {
 		return json.NewDecoder(resp.Body).Decode(out)
 	}
+	io.Copy(io.Discard, resp.Body)
 	return nil
 }
 
