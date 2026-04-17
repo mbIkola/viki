@@ -184,14 +184,15 @@ Tools:
 - `ask(query, top_k=8)`
 - `get_tree(root_page_id, depth=2, limit=200)`
 - `what_changed(date?, run_id?, parent_id?, limit=50, include_excerpts=true)`
-- `update_page(page_id, title?, body_storage?)` (at least one of `title` or `body_storage` is required; otherwise `validation_error`)
-- `create_child_page(parent_page_id, title, body_storage)` (`body_storage` is required and must be Confluence storage XHTML)
+- `update_page(page_id, title?, body_storage?)` (requires `page_id` and at least one of `title`/`body_storage`; MCP does lightweight pre-validation and returns `validation_error` for obviously invalid inputs)
+- `create_child_page(parent_page_id, title, body_storage)` (`body_storage` is required; MCP applies a lightweight storage-shape check before sending upstream)
 
 Write safety:
 
 - `mcp.write_enabled` defaults to `false`
 - when write tools are disabled, MCP returns `write_disabled`
-- when `body_storage` is provided to `update_page`, it must be Confluence storage XHTML or MCP returns `validation_error`
+- when `mcp.write_enabled=true`, `confluence.base_url` and a Confluence token are required
+- MCP storage checks are heuristic pre-validation only; Confluence API remains the source of truth for strict storage XHTML validation
 - MCP write failures are returned as tool-call errors with stable message tokens: `write_disabled`, `local_refresh_failed`, `version_conflict`, `auth_error`, `upstream_error`
 
 Prompts:

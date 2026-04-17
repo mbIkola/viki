@@ -43,6 +43,58 @@ func TestClassifyWriteError_Conflict(t *testing.T) {
 	}
 }
 
+func TestClassifyWriteError_Auth(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+	}{
+		{name: "unauthorized", status: http.StatusUnauthorized},
+		{name: "forbidden", status: http.StatusForbidden},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := classifyWriteError(&confluence.HTTPError{
+				Method: http.MethodPut,
+				URL:    "http://example.invalid/rest/api/content/123",
+				Status: tt.status,
+				Body:   "auth denied",
+			})
+			if err == nil {
+				t.Fatalf("expected error")
+			}
+			if !strings.Contains(err.Error(), "auth_error") {
+				t.Fatalf("expected auth_error, got %v", err)
+			}
+		})
+	}
+}
+
+func TestClassifyWriteError_UpstreamHTTP(t *testing.T) {
+	err := classifyWriteError(&confluence.HTTPError{
+		Method: http.MethodPut,
+		URL:    "http://example.invalid/rest/api/content/123",
+		Status: http.StatusInternalServerError,
+		Body:   "server boom",
+	})
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	if !strings.Contains(err.Error(), "upstream_error") {
+		t.Fatalf("expected upstream_error, got %v", err)
+	}
+}
+
+func TestClassifyWriteError_UpstreamGeneric(t *testing.T) {
+	err := classifyWriteError(errors.New("dial tcp timeout"))
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	if !strings.Contains(err.Error(), "upstream_error") {
+		t.Fatalf("expected upstream_error, got %v", err)
+	}
+}
+
 func TestUpdatePage_LocalRefreshFailedAfterRemoteSuccess(t *testing.T) {
 	fakeClient := &fakeConfluenceWriteClient{
 		updatePage: confluence.Page{

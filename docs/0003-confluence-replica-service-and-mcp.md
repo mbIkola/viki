@@ -77,8 +77,8 @@ flowchart LR
 
 - MCP write tools защищены флагом и сразу обновляют локальный индекс:
   - `mcp.write_enabled=false` по умолчанию; при выключенном флаге запись возвращает `write_disabled`
-  - `update_page` требует `page_id` и хотя бы одно из `title`/`body_storage`, иначе `validation_error`
-  - `body_storage` для `update_page`/`create_child_page` должен быть в формате Confluence storage XHTML, иначе `validation_error`
+  - `update_page` требует `page_id` и хотя бы одно из `title`/`body_storage`; MCP делает лёгкую pre-validation входа и при явной невалидности возвращает `validation_error`
+  - `body_storage` для `update_page`/`create_child_page` ожидается в формате Confluence storage XHTML, но проверка в MCP эвристическая; строгая валидация выполняется Confluence API
   - при успешном `update_page` / `create_child_page` страница сразу upsert-ится в локальную реплику (для child page дополнительно refresh/upsert родителя)
   - если upstream применился, но локальный refresh не завершился, возвращается `local_refresh_failed` чтобы агент не считал локальный state консистентным
   - ошибки write surface отдаются как MCP tool-call errors с token-ами в message: `write_disabled`, `local_refresh_failed`, `version_conflict`, `auth_error`, `upstream_error`

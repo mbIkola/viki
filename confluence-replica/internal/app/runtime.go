@@ -88,6 +88,10 @@ func LoadConfigWithOptions(path string, opts LoadOptions) (Config, error) {
 	if cfg.Confluence.Token == "" {
 		cfg.Confluence.Token = os.Getenv("CONFLUENCE_PAT")
 	}
+	cfg.Confluence.BaseURL = strings.TrimSpace(cfg.Confluence.BaseURL)
+	if cfg.MCP.WriteEnabled && cfg.Confluence.BaseURL == "" {
+		return Config{}, fmt.Errorf("mcp.write_enabled=true requires confluence.base_url")
+	}
 	if cfg.MCP.WriteEnabled {
 		cfg.Confluence.Token, err = resolveSecretRef(cfg.Confluence.Token)
 		if err != nil {
