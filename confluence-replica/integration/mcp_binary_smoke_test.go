@@ -142,6 +142,16 @@ func probeMCPBinarySmoke(binaryPath, configPath string) (mcpSmokeResult, error) 
 	if err != nil {
 		return mcpSmokeResult{}, err
 	}
+	writeErr := expectRPCCallErrorContains(stdin, lines, 6, "tools/call", map[string]any{
+		"name": "update_page",
+		"arguments": map[string]any{
+			"page_id": "smoke-page-id",
+			"title":   "Smoke Update",
+		},
+	}, "write_disabled", stderr.String)
+	if writeErr != nil {
+		return mcpSmokeResult{}, writeErr
+	}
 
 	toolNames, err := decodeNamedList(toolsResult["tools"], "tools")
 	if err != nil {
@@ -279,6 +289,25 @@ func writeMessage(stdin interface{ Write([]byte) (int, error) }, payload map[str
 	raw = append(raw, '\n')
 	_, err = stdin.Write(raw)
 	return err
+}
+
+func expectRPCCallErrorContains(stdin interface{ Write([]byte) (int, error) }, lines <-chan scanEvent, id int, method string, params map[string]any, token string, stderr func() string) error {
+	result, err := rpcCall(stdin, lines, id, method, params, stderr)
+	if err != nil {
+		if strings.Contains(err.Error(), token) {
+			return nil
+		}
+		return fmt.Errorf("expected %s error to contain %q: %v", method, token, err)
+	}
+
+	raw, marshalErr := json.Marshal(result)
+	if marshalErr != nil {
+		return fmt.Errorf("marshal %s result: %w", method, marshalErr)
+	}
+	if !strings.Contains(string(raw), token) {
+		return fmt.Errorf("expected %s to fail with %q", method, token)
+	}
+	return nil
 }
 
 func decodeNamedList(raw json.RawMessage, field string) ([]string, error) {

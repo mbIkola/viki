@@ -184,13 +184,15 @@ Tools:
 - `ask(query, top_k=8)`
 - `get_tree(root_page_id, depth=2, limit=200)`
 - `what_changed(date?, run_id?, parent_id?, limit=50, include_excerpts=true)`
-- `update_page(page_id, title?, body_storage?)`
-- `create_child_page(parent_page_id, title, body_storage)`
+- `update_page(page_id, title?, body_storage?)` (at least one of `title` or `body_storage` is required; otherwise `validation_error`)
+- `create_child_page(parent_page_id, title, body_storage)` (`body_storage` is required and must be Confluence storage XHTML)
 
 Write safety:
 
 - `mcp.write_enabled` defaults to `false`
 - when write tools are disabled, MCP returns `write_disabled`
+- when `body_storage` is provided to `update_page`, it must be Confluence storage XHTML or MCP returns `validation_error`
+- MCP write failures are returned as tool-call errors with stable message tokens: `write_disabled`, `local_refresh_failed`, `version_conflict`, `auth_error`, `upstream_error`
 
 Prompts:
 
