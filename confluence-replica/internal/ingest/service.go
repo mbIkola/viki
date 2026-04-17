@@ -93,49 +93,13 @@ func (s *Service) syncInternal(ctx context.Context, parentIDs []string, mode, sc
 
 	after := make([]diff.PageState, 0, len(pages))
 	for idx, p := range pages {
-		bodyNorm := diff.NormalizeText(stripHTML(p.Body.Storage.Value))
-		bodyHash := diff.HashNormalizedText(bodyNorm)
-		pageParentID := ""
-		if len(p.Ancestors) > 0 {
-			pageParentID = p.Ancestors[len(p.Ancestors)-1].ID
-		}
-
-		up := store.Page{
-			PageID:       p.ID,
-			SpaceKey:     p.Space.Key,
-			Title:        p.Title,
-			ParentPageID: pageParentID,
-			CurrentVer:   p.Version.Number,
-			UpdatedAt:    parseConfluenceTime(p.Version.When),
-			CreatedAt:    p.CreatedAt,
-			PathHash:     hashPath(p.Ancestors),
-			Tags:         labels(p.Metadata),
-			Status:       p.Status,
-		}
-		v := store.PageVersion{
-			PageID:     p.ID,
-			Version:    p.Version.Number,
-			AuthorID:   p.Version.By.AccountID,
-			BodyRaw:    p.Body.Storage.Value,
-			BodyNorm:   bodyNorm,
-			BodyHash:   bodyHash,
-			Title:      p.Title,
-			ParentPage: pageParentID,
-			FetchedAt:  time.Now().UTC(),
-		}
-		chunks := toChunks(p.ID, p.Version.Number, stripHTML(p.Body.Storage.Value))
-		if err := s.fillChunkEmbeddings(ctx, chunks); err != nil {
+		state, err := s.UpsertConfluencePage(ctx, p)
+		if err != nil {
 			_ = s.store.FinishSyncRun(ctx, runID, "failed", map[string]any{"error": err.Error()})
 			return err
 		}
-		logx.Debugf("[ingest] page_prepare index=%d/%d page_id=%s version=%d chunks=%d parent_id=%s", idx+1, len(pages), p.ID, p.Version.Number, len(chunks), pageParentID)
-
-		if err := s.store.UpsertPageWithVersion(ctx, up, v, chunks); err != nil {
-			_ = s.store.FinishSyncRun(ctx, runID, "failed", map[string]any{"error": err.Error()})
-			return err
-		}
-		logx.Debugf("[ingest] page_saved page_id=%s version=%d", p.ID, p.Version.Number)
-		after = append(after, diff.PageState{PageID: p.ID, Title: p.Title, ParentPageID: pageParentID, Version: p.Version.Number, BodyNormHash: bodyHash, Exists: true})
+		logx.Debugf("[ingest] page_saved index=%d/%d page_id=%s version=%d parent_id=%s", idx+1, len(pages), state.PageID, state.Version, state.ParentPageID)
+		after = append(after, state)
 	}
 
 	beforeStates := make([]diff.PageState, 0, len(before))
@@ -186,6 +150,62 @@ func (s *Service) syncInternal(ctx context.Context, parentIDs []string, mode, sc
 	}
 	logx.Infof("[ingest] sync_done mode=%s scope_mode=%s run_id=%d pages=%d events=%d", mode, scopeMode, runID, len(pages), len(events))
 	return nil
+}
+
+func pageToStoreRecords(p confluence.Page, fetchedAt time.Time) (store.Page, store.PageVersion, []store.Chunk, diff.PageState) {
+	bodyText := stripHTML(p.Body.Storage.Value)
+	bodyNorm := diff.NormalizeText(bodyText)
+	bodyHash := diff.HashNormalizedText(bodyNorm)
+	pageParentID := ""
+	if len(p.Ancestors) > 0 {
+		pageParentID = p.Ancestors[len(p.Ancestors)-1].ID
+	}
+
+	up := store.Page{
+		PageID:       p.ID,
+		SpaceKey:     p.Space.Key,
+		Title:        p.Title,
+		ParentPageID: pageParentID,
+		CurrentVer:   p.Version.Number,
+		UpdatedAt:    parseConfluenceTime(p.Version.When),
+		CreatedAt:    p.CreatedAt,
+		PathHash:     hashPath(p.Ancestors),
+		Tags:         labels(p.Metadata),
+		Status:       p.Status,
+	}
+	v := store.PageVersion{
+		PageID:     p.ID,
+		Version:    p.Version.Number,
+		AuthorID:   p.Version.By.AccountID,
+		BodyRaw:    p.Body.Storage.Value,
+		BodyNorm:   bodyNorm,
+		BodyHash:   bodyHash,
+		Title:      p.Title,
+		ParentPage: pageParentID,
+		FetchedAt:  fetchedAt.UTC(),
+	}
+	chunks := toChunks(p.ID, p.Version.Number, bodyText)
+	state := diff.PageState{
+		PageID:       p.ID,
+		Title:        p.Title,
+		ParentPageID: pageParentID,
+		Version:      p.Version.Number,
+		BodyNormHash: bodyHash,
+		Exists:       true,
+	}
+	return up, v, chunks, state
+}
+
+func (s *Service) UpsertConfluencePage(ctx context.Context, p confluence.Page) (diff.PageState, error) {
+	up, v, chunks, state := pageToStoreRecords(p, time.Now().UTC())
+	if err := s.fillChunkEmbeddings(ctx, chunks); err != nil {
+		return diff.PageState{}, err
+	}
+	logx.Debugf("[ingest] page_prepare page_id=%s version=%d chunks=%d parent_id=%s", state.PageID, state.Version, len(chunks), state.ParentPageID)
+	if err := s.store.UpsertPageWithVersion(ctx, up, v, chunks); err != nil {
+		return diff.PageState{}, err
+	}
+	return state, nil
 }
 
 func toChunks(pageID string, version int, text string) []store.Chunk {
