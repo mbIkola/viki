@@ -101,6 +101,9 @@ func LoadConfigWithOptions(path string, opts LoadOptions) (Config, error) {
 		if err != nil {
 			return Config{}, fmt.Errorf("resolve confluence token: %w", err)
 		}
+		if cfg.Confluence.Token == "" {
+			return Config{}, fmt.Errorf("confluence token is required")
+		}
 	} else if strings.HasPrefix(cfg.Confluence.Token, "keychain://") {
 		// Local-only runtimes (for MCP retrieval facade) should not require Confluence auth.
 		cfg.Confluence.Token = ""

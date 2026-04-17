@@ -79,7 +79,7 @@ confluence:
 `)
 	_, err := LoadConfigWithOptions(cfgPath, LoadOptions{
 		RequireParentIDs:       true,
-		RequireConfluenceToken: true,
+		RequireConfluenceToken: false,
 	})
 	if err == nil || !strings.Contains(err.Error(), "mcp.write_enabled requires confluence token") {
 		t.Fatalf("expected MCP write token error, got: %v", err)
@@ -102,7 +102,7 @@ confluence:
 `)
 	cfg, err := LoadConfigWithOptions(cfgPath, LoadOptions{
 		RequireParentIDs:       true,
-		RequireConfluenceToken: true,
+		RequireConfluenceToken: false,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

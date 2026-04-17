@@ -3,6 +3,7 @@ database:
   path: ""
 
 mcp:
+  # Enables the MCP write tools and demands a resolvable non-empty Confluence token.
   write_enabled: false
 
 confluence:
