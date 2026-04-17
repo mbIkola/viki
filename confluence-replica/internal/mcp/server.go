@@ -211,9 +211,7 @@ type createChildPageInput struct {
 }
 
 var (
-	storageTagRE      = regexp.MustCompile(`(?is)<\s*(?:ac:|ri:)?[a-z][a-z0-9:_-]*(?:\s+[^>]*)?>`)
-	markdownLikeLine  = regexp.MustCompile(`(?m)^\s{0,3}(?:#{1,6}\s|[-*+]\s|\d+\.\s|>\s|~~~)`)
-	markdownLinkToken = regexp.MustCompile(`\[[^\]]+\]\([^)]+\)`)
+	storageTagRE = regexp.MustCompile(`(?is)<\s*(?:ac:|ri:)?[a-z][a-z0-9:_-]*(?:\s+[^>]*)?>`)
 )
 
 func NewServer(backend Backend) *Server {
@@ -442,20 +440,22 @@ func (s *Server) updatePageTool(ctx context.Context, _ *sdk.CallToolRequest, in 
 	var title *string
 	if in.Title != nil {
 		trimmed := strings.TrimSpace(*in.Title)
-		if trimmed != "" {
-			title = &trimmed
+		if trimmed == "" {
+			return nil, PageMutationResult{}, errors.New("validation_error: title cannot be empty when provided")
 		}
+		title = &trimmed
 	}
 
 	var bodyStorage *string
 	if in.BodyStorage != nil {
 		trimmed := strings.TrimSpace(*in.BodyStorage)
-		if trimmed != "" {
-			if err := validateStorageBody(trimmed); err != nil {
-				return nil, PageMutationResult{}, err
-			}
-			bodyStorage = &trimmed
+		if trimmed == "" {
+			return nil, PageMutationResult{}, errors.New("validation_error: body_storage cannot be empty when provided")
 		}
+		if err := validateStorageBody(trimmed); err != nil {
+			return nil, PageMutationResult{}, err
+		}
+		bodyStorage = &trimmed
 	}
 
 	if title == nil && bodyStorage == nil {
@@ -480,11 +480,11 @@ func (s *Server) createChildPageTool(ctx context.Context, _ *sdk.CallToolRequest
 	}
 	title := strings.TrimSpace(in.Title)
 	if title == "" {
-		return nil, PageMutationResult{}, errors.New("validation_error: title is required")
+		return nil, PageMutationResult{}, errors.New("validation_error: title cannot be empty after trimming")
 	}
 	bodyStorage := strings.TrimSpace(in.BodyStorage)
 	if bodyStorage == "" {
-		return nil, PageMutationResult{}, errors.New("validation_error: body_storage is required")
+		return nil, PageMutationResult{}, errors.New("validation_error: body_storage cannot be empty after trimming")
 	}
 	if err := validateStorageBody(bodyStorage); err != nil {
 		return nil, PageMutationResult{}, err
@@ -506,9 +506,8 @@ func validateStorageBody(body string) error {
 	if trimmed == "" {
 		return errors.New("validation_error: body_storage is required")
 	}
-	if strings.Contains(trimmed, "```") || markdownLikeLine.MatchString(trimmed) || markdownLinkToken.MatchString(trimmed) {
-		return errors.New("validation_error: body_storage must be Confluence storage XHTML, markdown/plain text is not accepted")
-	}
+	// Heuristic check only: require XHTML-like storage content with visible tags.
+	// We intentionally avoid strict parsing and avoid aggressive markdown detection.
 	if !storageTagRE.MatchString(trimmed) {
 		return errors.New("validation_error: body_storage must be Confluence storage XHTML (expected XML-like tags such as <p>...</p>)")
 	}
