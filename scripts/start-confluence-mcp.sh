@@ -4,6 +4,10 @@ set -euo pipefail
 KEYCHAIN_SERVICE="${CONFLUENCE_PAT_KEYCHAIN_SERVICE:-codex_confluence_pat}"
 CONFLUENCE_URL="${CONFLUENCE_URL:-https://gbuconfluence.oraclecorp.com/}"
 CONFLUENCE_SPACES_FILTER="${CONFLUENCE_SPACES_FILTER:-UGBUPD}"
+JIRA_URL="${JIRA_URL:-https://gbujira.oraclecorp.com/}"
+JIRA_KEYCHAIN_SERVICE="${JIRA_PAT_KEYCHAIN_SERVICE:-codex_jira_pat}"
+JIRA_PROJECTS_FILTER="${JIRA_PROJECTS_FILTER:-}"
+JIRA_REQUIRED="${JIRA_REQUIRED:-false}"
 UV_CACHE_DIR="${UV_CACHE_DIR:-/tmp/codex-uv-cache}"
 UV_TOOL_DIR="${UV_TOOL_DIR:-/tmp/codex-uv-tools}"
 XDG_DATA_HOME="${XDG_DATA_HOME:-/tmp/codex-xdg-data}"
@@ -47,10 +51,29 @@ if [[ -z "${TOKEN}" ]]; then
   exit 1
 fi
 
-run_mcp_atlassian \
-  --transport stdio \
-  --read-only \
-  --confluence-url "$CONFLUENCE_URL" \
-  --confluence-personal-token "$TOKEN" \
-  --confluence-spaces-filter "$CONFLUENCE_SPACES_FILTER" \
-  "$@"
+JIRA_TOKEN="${JIRA_PAT:-}"
+if [[ -z "${JIRA_TOKEN}" ]]; then
+  JIRA_TOKEN="$(security find-generic-password -a "$USER" -s "$JIRA_KEYCHAIN_SERVICE" -w 2>/dev/null || true)"
+fi
+
+mcp_args=(
+  --transport stdio
+  --read-only
+  --confluence-url "$CONFLUENCE_URL"
+  --confluence-personal-token "$TOKEN"
+  --confluence-spaces-filter "$CONFLUENCE_SPACES_FILTER"
+)
+
+if [[ -n "${JIRA_TOKEN}" ]]; then
+  mcp_args+=(--jira-url "$JIRA_URL" --jira-personal-token "$JIRA_TOKEN")
+  if [[ -n "${JIRA_PROJECTS_FILTER}" ]]; then
+    mcp_args+=(--jira-projects-filter "$JIRA_PROJECTS_FILTER")
+  fi
+elif [[ "${JIRA_REQUIRED}" == "true" ]]; then
+  echo "Jira PAT not found. Set JIRA_PAT or store it in Keychain service '${JIRA_KEYCHAIN_SERVICE}'." >&2
+  exit 1
+else
+  echo "Jira PAT not found (service '${JIRA_KEYCHAIN_SERVICE}'); starting with Confluence-only access." >&2
+fi
+
+run_mcp_atlassian "${mcp_args[@]}" "$@"
