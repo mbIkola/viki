@@ -11,3 +11,20 @@
 
 - Skills: [`docs/skills/0001-superpowers.md`](./docs/skills/0001-superpowers.md)
 - Confluence: [`docs/skills/0002-confluence-mcp-smoketest.md`](./docs/skills/0002-confluence-mcp-smoketest.md)
+
+## `confluence_replica` in one paragraph
+
+`confluence_replica` is a local SQLite mirror + MCP facade for selected Confluence roots.
+It gives the agent fast, deterministic `search` / `ask` / `what_changed` over local data instead of improvising against live pages every single time.
+
+### Why this exists
+
+Because reality is predictable:
+
+> "Just ask your AI agent if she wants to use atlassian-mcp..."
+
+In practice, many agents answer with a tactical masterpiece:
+
+> "nah, I'll just curl the needed pages."
+
+That approach is slow, brittle, and context-lossy. `confluence_replica` exists to remove this recurring circus.
