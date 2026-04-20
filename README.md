@@ -23,8 +23,13 @@ Because reality is predictable:
 
 > "Just ask your AI agent if she wants to use atlassian-mcp..."
 
-In practice, many agents answer with a tactical masterpiece:
+In practice, many agents run this loop:
 
-> "nah, I'll just curl the needed pages."
+- try `atlassian-mcp`
+- fail
+- clone/fix `atlassian-mcp` in `/tmp`
+- run patched variant
+- fail again on the next request
+- declare MCP cursed and switch to `curl`
 
-That approach is slow, brittle, and context-lossy. `confluence_replica` exists to remove this recurring circus.
+`confluence_replica` exists to eliminate that recurring hero story: no live MCP firefighting, no ad-hoc patching, no ritual fallback to `curl`.
