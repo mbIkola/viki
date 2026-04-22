@@ -1,0 +1,3 @@
+interface:
+  display_name: "OCI DevOps SCM PR CLI"
+  short_description: "Create and inspect OCI DevOps pull requests via `oci` CLI"
