@@ -11,6 +11,7 @@ PARENT_ID ?=
 PARENT_IDS ?=
 DATE ?= $(shell date +%F)
 KEYCHAIN_SERVICE ?= codex_confluence_pat
+JIRA_KEYCHAIN_SERVICE ?= codex_jira_pat
 KEYCHAIN_ACCOUNT ?=
 VERSION ?= $(shell git describe --tags --match 'confluence-replica/v*' --abbrev=0 2>/dev/null || echo dev)
 COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
@@ -37,7 +38,7 @@ help:
 	@echo "  make rebuild            # Delete sqlite db artifacts and rebuild from Confluence"
 	@echo "  make digest [DATE=YYYY-MM-DD]"
 	@echo "  make mcp-integration     # Build MCP binary and run the smoke test"
-	@echo "  make update-token        # Interactively update Confluence PAT in macOS Keychain"
+	@echo "  make update-token        # Interactively update Jira and Confluence PATs in macOS Keychain"
 
 env-init:
 	@if [[ ! -f .env ]]; then cp .env.example .env; fi
@@ -102,10 +103,15 @@ mcp-integration: build-mcp
 	@MCP_BINARY="$(abspath $(BIN_DIR))/mcp" $(GO_TEST_INTEGRATION) ./integration -run TestMCPBinarySmoke -count=1
 
 update-token:
-	@service="$(KEYCHAIN_SERVICE)"; \
+	@confluence_service="$(KEYCHAIN_SERVICE)"; \
+	jira_service="$(JIRA_KEYCHAIN_SERVICE)"; \
 	account="$(KEYCHAIN_ACCOUNT)"; \
 	default_account="$$(whoami)"; \
-	if [[ -z "$$service" ]]; then \
+	if [[ -z "$$jira_service" ]]; then \
+		echo "JIRA_KEYCHAIN_SERVICE is required"; \
+		exit 1; \
+	fi; \
+	if [[ -z "$$confluence_service" ]]; then \
 		echo "KEYCHAIN_SERVICE is required"; \
 		exit 1; \
 	fi; \
@@ -113,11 +119,19 @@ update-token:
 		read -r -p "Keychain account [$$default_account]: " input_account; \
 		account="$${input_account:-$$default_account}"; \
 	fi; \
-	read -r -s -p "Enter new Confluence PAT: " token; \
+	read -r -s -p "Enter new Jira PAT: " jira_token; \
 	echo; \
-	if [[ -z "$$token" ]]; then \
-		echo "PAT cannot be empty"; \
+	if [[ -z "$$jira_token" ]]; then \
+		echo "Jira PAT cannot be empty"; \
 		exit 1; \
 	fi; \
-	security add-generic-password -U -s "$$service" -a "$$account" -w "$$token"; \
-	echo "Token updated: keychain://$$service?account=$$account"
+	read -r -s -p "Enter new Confluence PAT: " confluence_token; \
+	echo; \
+	if [[ -z "$$confluence_token" ]]; then \
+		echo "Confluence PAT cannot be empty"; \
+		exit 1; \
+	fi; \
+	security add-generic-password -U -s "$$jira_service" -a "$$account" -w "$$jira_token"; \
+	security add-generic-password -U -s "$$confluence_service" -a "$$account" -w "$$confluence_token"; \
+	echo "Jira token updated: keychain://$$jira_service?account=$$account"; \
+	echo "Confluence token updated: keychain://$$confluence_service?account=$$account"

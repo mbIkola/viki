@@ -58,7 +58,6 @@ fi
 
 mcp_args=(
   --transport stdio
-  --read-only
   --confluence-url "$CONFLUENCE_URL"
   --confluence-personal-token "$TOKEN"
   --confluence-spaces-filter "$CONFLUENCE_SPACES_FILTER"
